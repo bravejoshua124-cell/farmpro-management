@@ -443,7 +443,26 @@ export default function App() {
     const { data, error: queryError } = await supabase.from(table).select('*').eq('owner_id', ownerId).eq('farm_id', farmId).order('created_at', { ascending: false }).limit(100)
     if (requestId !== moduleLoadRequest.current) return
     if (queryError) setError(queryError.message)
-    setRows(data || [])
+    if (module === 'Sales' && data?.length) {
+      const saleIds = data.map((sale: Row) => sale.id)
+      const { data: itemRows, error: itemError } = await supabase.from('sale_items')
+        .select('sale_id, item_type, description, quantity, unit, unit_price, line_total')
+        .eq('owner_id', ownerId).in('sale_id', saleIds).order('id', { ascending: true })
+      if (requestId !== moduleLoadRequest.current) return
+      if (itemError) setError(`Sales were loaded, but their item details could not be loaded: ${itemError.message}`)
+      const itemsBySale = new Map<string, Row[]>()
+      for (const item of itemRows || []) {
+        const current = itemsBySale.get(item.sale_id) || []
+        current.push(item)
+        itemsBySale.set(item.sale_id, current)
+      }
+      setRows(data.map((sale: Row) => ({
+        ...sale,
+        items_summary: (itemsBySale.get(sale.id) || []).map(item => `${item.description} (${item.quantity} ${item.unit})`).join(' · ') || 'No item details'
+      })))
+    } else {
+      setRows(data || [])
+    }
     setBusy(false)
   }
 
@@ -528,11 +547,14 @@ export default function App() {
     {modal && <RecordModal key={`${active}:${farm?.id || ''}:${editingRecord?.id || 'new'}`} module={active} farmId={farm?.id} userId={session.user.id} editingRecord={editingRecord} onClose={() => { setModal(false); setEditingRecord(null) }} onSaved={async () => {
       setModal(false)
       setEditingRecord(null)
-      if (active === 'Livestock') setSuccess(editingRecord ? 'Livestock record updated successfully.' : 'Livestock record saved successfully.')
-      if (active === 'Customers') setSuccess('Customer saved successfully.')
-      if (active === 'Suppliers') setSuccess('Supplier saved successfully.')
-      if (active === 'Feed Logs') setSuccess('Feed log saved successfully.')
-      if (active === 'Breeding Records') setSuccess('Breeding record saved successfully.')
+      const successLabels: Partial<Record<ModuleKey, string>> = {
+        Livestock: 'Livestock record', Poultry: 'Poultry batch', 'Health & Breeding': 'Health record',
+        'Breeding Records': 'Breeding record', 'Feed & Inventory': 'Feed inventory item', 'Feed Logs': 'Feed log',
+        Production: 'Production record', Sales: 'Sale and sale items', Purchases: 'Purchase', Expenses: 'Expense',
+        Customers: 'Customer', Suppliers: 'Supplier', Tasks: 'Farm task'
+      }
+      const successLabel = successLabels[active as ModuleKey] || 'Record'
+      setSuccess(`${successLabel} ${editingRecord ? 'updated' : 'saved'} successfully.`)
       const { data: updatedFarms, error: farmError } = await supabase.from('farms').select('*').eq('owner_id', session.user.id).order('name', { ascending: true })
       if (farmError) setError(`Unable to refresh farms: ${farmError.message}`)
       else {
@@ -933,7 +955,7 @@ function ModulePage({ module, rows, loading, search, setSearch, onAdd, onEdit }:
     'Feed & Inventory': ['feed_name','feed_type','quantity','unit','reorder_level','unit_cost'],
     'Feed Logs': ['fed_on','feed_name','target_name','quantity','unit','cost','notes'],
     Production: ['production_type','recorded_on','quantity','unit','quality_grade'],
-    Sales: ['reference_no','sale_date','total_amount','amount_paid','status','payment_method'],
+    Sales: ['reference_no','sale_date','items_summary','subtotal','discount','total_amount','amount_paid','status','payment_method'],
     Purchases: ['purchase_date','category','description','total_amount','amount_paid','payment_status'],
     Expenses: ['expense_date','category','description','amount','payee','payment_method'],
     Customers: ['name','phone','email','address','farm_name'],
