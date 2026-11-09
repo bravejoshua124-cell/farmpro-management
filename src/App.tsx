@@ -1701,6 +1701,12 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
         setError('Choose a valid payment status.')
         return
       }
+      if ((values.payment_status === 'paid' && amountPaid !== totalAmount) ||
+        (values.payment_status === 'part_paid' && !(amountPaid > 0 && amountPaid < totalAmount)) ||
+        (values.payment_status === 'unpaid' && amountPaid !== 0)) {
+        setError('Purchase payment status must agree with the amount paid.')
+        return
+      }
       if (selectedPurchaseSupplierId && !purchaseSuppliers.some(supplier => supplier.id === selectedPurchaseSupplierId)) {
         setError('Choose a supplier belonging to the currently selected farm, or leave the supplier blank.')
         return
@@ -2180,7 +2186,15 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
           const amount = f.key === 'subtotal' ? saleSubtotal : saleTotal
           return <label key={f.key} className="field"><span>{f.label}</span><input type="number" readOnly value={Number.isFinite(amount) ? amount : ''}/></label>
         }
-        return <label key={f.key} className="field"><span>{f.label}</span>{f.options ? <select required={requiredField} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}><option value="">Choose…</option>{f.options.map(o => <option key={o} value={o}>{o.replace(/_/g,' ')}</option>)}</select> : <input required={requiredField} type={f.type || 'text'} min={module === 'Sales' && f.key === 'discount' ? 0 : min} max={module === 'Sales' && f.key === 'discount' ? saleSubtotal : undefined} step={f.type === 'number' ? 'any' : undefined} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}/>}</label>
+        return <label key={f.key} className="field"><span>{f.label}</span>{f.options ? <select required={requiredField} value={values[f.key] || ''} onChange={e => {
+          const nextValue = e.target.value
+          setValues(current => ({...current,[f.key]:nextValue}))
+          if (module === 'Breeding Records' && f.key === 'species') {
+            setSelectedDamId('')
+            setSelectedSireId('')
+            setSelectedBreedingPoultryId('')
+          }
+        }}><option value="">Choose…</option>{f.options.map(o => <option key={o} value={o}>{o.replace(/_/g,' ')}</option>)}</select> : <input required={requiredField} type={f.type || 'text'} min={module === 'Sales' && f.key === 'discount' ? 0 : min} max={module === 'Sales' && f.key === 'discount' ? saleSubtotal : undefined} step={f.type === 'number' ? 'any' : undefined} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}/>}</label>
       })}</div>}
       {selectorsError && (module === 'Health & Breeding' || module === 'Production') && <div className="form-error">Unable to load animal or poultry options: {selectorsError}</div>}
       {parentAnimalsError && module === 'Livestock' && <div className="form-error">Unable to load same-farm parent animals: {parentAnimalsError}</div>}
