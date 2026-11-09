@@ -341,7 +341,7 @@ export default function App() {
     if (module === 'Breeding Records') {
       const [recordsResult, livestockResult, poultryResult] = await Promise.all([
         supabase.from('breeding_records').select('*').eq('owner_id', ownerId).eq('farm_id', farmId).order('created_at', { ascending: false }).limit(100),
-        supabase.from('livestock').select('id, tag_number, name, species').eq('owner_id', ownerId).eq('farm_id', farmId),
+        supabase.from('livestock').select('id, tag_number, name, species, sex').eq('owner_id', ownerId).eq('farm_id', farmId),
         supabase.from('poultry_batches').select('id, batch_name, bird_type').eq('owner_id', ownerId).eq('farm_id', farmId)
       ])
       if (requestId !== moduleLoadRequest.current) return
@@ -400,10 +400,10 @@ export default function App() {
     }
     if (module === 'Feed Logs') {
       const [logsResult, farmResult, inventoryResult, livestockResult, poultryResult] = await Promise.all([
-        supabase.from('feed_logs').select('*').eq('owner_id', ownerId).eq('farm_id', farmId).order('fed_on', { ascending: false }).limit(100),
+        queryRecentFeedLogs(ownerId, farmId),
         supabase.from('farms').select('id, name').eq('owner_id', ownerId).eq('id', farmId),
         supabase.from('feed_inventory').select('id, feed_name').eq('owner_id', ownerId).eq('farm_id', farmId),
-        supabase.from('livestock').select('id, tag_number, name, species').eq('owner_id', ownerId).eq('farm_id', farmId),
+        supabase.from('livestock').select('id, tag_number, name, species, sex').eq('owner_id', ownerId).eq('farm_id', farmId),
         supabase.from('poultry_batches').select('id, batch_name, bird_type').eq('owner_id', ownerId).eq('farm_id', farmId)
       ])
       if (requestId !== moduleLoadRequest.current) return
@@ -1053,13 +1053,13 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
   const fields: Record<string,{key:string,label:string,type?:string,options?:string[]}[]> = {
     Livestock: [],
     Poultry: [{key:'batch_name',label:'Batch name'},{key:'bird_type',label:'Bird type',options:['layers','broilers','indigenous','breeders','other']},{key:'breed',label:'Breed'},{key:'start_date',label:'Start date',type:'date'},{key:'opening_count',label:'Starting bird count',type:'number'},{key:'current_count',label:'Current bird count',type:'number'}],
-    Expenses: [{key:'category',label:'Category',options:['Feed','Veterinary','Labour','Transport','Utilities','Repairs','Other']},{key:'description',label:'Description'},{key:'amount',label:'Amount (UGX)',type:'number'},{key:'expense_date',label:'Date',type:'date'},{key:'payee',label:'Paid to'},{key:'payment_method',label:'Payment method',options:['Cash','Mobile Money','Bank transfer','Other']}],
-    Tasks: [{key:'title',label:'Task title'},{key:'category',label:'Category'},{key:'due_date',label:'Due date',type:'date'},{key:'priority',label:'Priority',options:['low','medium','high','urgent']},{key:'status',label:'Status',options:['pending','in_progress','completed']},{key:'assigned_to',label:'Assigned to'}],
+    Expenses: [{key:'category',label:'Category',options:['Feed','Veterinary','Labour','Transport','Utilities','Repairs','Other']},{key:'description',label:'Description'},{key:'amount',label:'Amount (UGX)',type:'number'},{key:'expense_date',label:'Date',type:'date'},{key:'payee',label:'Paid to'},{key:'payment_method',label:'Payment method',options:['Cash','Mobile Money','Bank transfer','Other']},{key:'notes',label:'Notes'}],
+    Tasks: [{key:'title',label:'Task title'},{key:'category',label:'Category'},{key:'due_date',label:'Due date',type:'date'},{key:'priority',label:'Priority',options:['low','medium','high','urgent']},{key:'status',label:'Status',options:['pending','in_progress','completed','cancelled']},{key:'assigned_to',label:'Assigned to'}],
     Sales: [{key:'reference_no',label:'Reference number'},{key:'sale_date',label:'Sale date',type:'date'},{key:'subtotal',label:'Subtotal (UGX)',type:'number'},{key:'discount',label:'Discount (UGX)',type:'number'},{key:'total_amount',label:'Total amount (UGX)',type:'number'},{key:'amount_paid',label:'Amount paid (UGX)',type:'number'},{key:'status',label:'Sale status',options:['draft','completed','part_paid','unpaid','cancelled']},{key:'payment_method',label:'Payment method',options:['Cash','Mobile Money','Bank Transfer','Other']},{key:'notes',label:'Notes'}],
     Purchases: [{key:'category',label:'Category',options:['Feed','Medicine','Livestock','Equipment','Other']},{key:'description',label:'Description'},{key:'purchase_date',label:'Date',type:'date'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bag, etc.)'},{key:'total_amount',label:'Total amount (UGX)',type:'number'},{key:'amount_paid',label:'Amount paid (UGX)',type:'number'},{key:'payment_status',label:'Payment status',options:['paid','part_paid','unpaid']}],
-    'Feed & Inventory': [{key:'feed_name',label:'Feed name'},{key:'feed_type',label:'Feed type'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bag, etc.)'},{key:'reorder_level',label:'Reorder level',type:'number'},{key:'unit_cost',label:'Unit cost (UGX)',type:'number'}],
+    'Feed & Inventory': [{key:'feed_name',label:'Feed name'},{key:'feed_type',label:'Feed type'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bag, etc.)'},{key:'reorder_level',label:'Reorder level',type:'number'},{key:'unit_cost',label:'Unit cost (UGX)',type:'number'},{key:'supplier_name',label:'Supplier name'},{key:'expiry_date',label:'Expiry date',type:'date'},{key:'notes',label:'Notes'}],
     'Feed Logs': [{key:'fed_on',label:'Date',type:'date'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bags, litres, etc.)'},{key:'cost',label:'Cost (UGX)',type:'number'},{key:'notes',label:'Notes'}],
-    'Breeding Records': [{key:'species',label:'Species'},{key:'mating_date',label:'Mating date',type:'date'},{key:'expected_date',label:'Expected date',type:'date'},{key:'outcome_date',label:'Outcome date',type:'date'},{key:'outcome',label:'Outcome'},{key:'offspring_count',label:'Offspring count',type:'number'},{key:'notes',label:'Notes'}],
+    'Breeding Records': [{key:'species',label:'Species',options:['pig','cow','goat','poultry']},{key:'mating_date',label:'Mating date',type:'date'},{key:'expected_date',label:'Expected date',type:'date'},{key:'outcome_date',label:'Outcome date',type:'date'},{key:'outcome',label:'Outcome',options:['pregnant','born','failed','aborted','unknown']},{key:'offspring_count',label:'Offspring count',type:'number'},{key:'notes',label:'Notes'}],
     Customers: [{key:'name',label:'Customer name'},{key:'phone',label:'Phone'},{key:'email',label:'Email',type:'email'},{key:'address',label:'Address'},{key:'notes',label:'Notes'}],
     Suppliers: [{key:'name',label:'Supplier name'},{key:'phone',label:'Phone'},{key:'email',label:'Email',type:'email'},{key:'address',label:'Address'},{key:'notes',label:'Notes'}],
     Production: [{key:'production_type',label:'Production type',options:['eggs','milk','weight','manure','offspring','other']},{key:'recorded_on',label:'Date',type:'date'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (litres, trays, kg, etc.)'},{key:'quality_grade',label:'Quality / grade'}],
@@ -1553,8 +1553,16 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
       }
       return
     }
-    if ((module === 'Health & Breeding' || module === 'Production') && !selectedLivestockId && !selectedPoultryBatchId) {
-      setError('Select at least one animal or poultry batch before saving.')
+    if (module === 'Poultry') {
+      const openingCount = String(values.opening_count ?? '').trim() === '' ? 0 : Number(values.opening_count)
+      const currentCount = String(values.current_count ?? '').trim() === '' ? openingCount : Number(values.current_count)
+      if (!Number.isSafeInteger(openingCount) || openingCount < 0 || !Number.isSafeInteger(currentCount) || currentCount < 0) {
+        setError('Opening and current bird counts must be non-negative whole numbers.')
+        return
+      }
+    }
+    if ((module === 'Health & Breeding' || module === 'Production') && Boolean(selectedLivestockId) === Boolean(selectedPoultryBatchId)) {
+      setError('Select exactly one target: either an individual livestock animal or a poultry batch, not both.')
       return
     }
     if ((module === 'Health & Breeding' || module === 'Production') &&
@@ -1595,15 +1603,45 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
       setError('Selected feed inventory item does not belong to the current farm.')
       return
     }
-    if (module === 'Feed Logs' && !selectedLivestockId && !selectedPoultryBatchId) {
-      setError('Select a livestock animal or poultry batch for this feed log.')
+    if (module === 'Feed Logs' && Boolean(selectedLivestockId) === Boolean(selectedPoultryBatchId)) {
+      setError('Select exactly one target: either a livestock animal or a poultry batch.')
       return
+    }
+    if (module === 'Feed Logs') {
+      const quantity = Number(values.quantity)
+      const cost = Number(values.cost)
+      if (!String(values.quantity ?? '').trim() || !Number.isFinite(quantity) || quantity <= 0) {
+        setError('Feed quantity must be a valid number greater than zero.')
+        return
+      }
+      if (!String(values.cost ?? '').trim() || !Number.isFinite(cost) || cost < 0) {
+        setError('Feed cost must be a valid non-negative amount.')
+        return
+      }
     }
     if (module === 'Feed Logs' &&
       ((selectedLivestockId && !livestock.some(item => item.id === selectedLivestockId)) ||
        (selectedPoultryBatchId && !poultryBatches.some(item => item.id === selectedPoultryBatchId)))) {
       setError('Selected livestock or poultry batch does not belong to the current farm.')
       return
+    }
+    if (module === 'Production') {
+      const quantity = Number(values.quantity)
+      if (!String(values.quantity ?? '').trim() || !Number.isFinite(quantity) || quantity <= 0) {
+        setError('Production quantity must be a valid number greater than zero.')
+        return
+      }
+      if (!String(values.unit ?? '').trim()) {
+        setError('Enter a unit for the production quantity.')
+        return
+      }
+    }
+    if (module === 'Expenses') {
+      const amount = Number(values.amount)
+      if (!String(values.amount ?? '').trim() || !Number.isFinite(amount) || amount < 0) {
+        setError('Expense amount must be a valid non-negative number.')
+        return
+      }
     }
     if (module === 'Purchases') {
       const quantity = Number(values.quantity)
@@ -1743,9 +1781,33 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
         setError('Selected breeding animal or poultry batch does not belong to the current farm.')
         return
       }
-      if (!String(values.species || '').trim()) {
-        setError('Enter a species before saving the breeding record.')
+      const breedingSpecies = values.species || ''
+      if (!['pig', 'cow', 'goat', 'poultry'].includes(breedingSpecies)) {
+        setError('Choose a valid breeding species: pig, cow, goat or poultry.')
         return
+      }
+      if (values.outcome && !['pregnant', 'born', 'failed', 'aborted', 'unknown'].includes(values.outcome)) {
+        setError('Choose a valid breeding outcome.')
+        return
+      }
+      if (breedingSpecies === 'poultry') {
+        if (!selectedBreedingPoultryId || selectedDamId || selectedSireId) {
+          setError('For poultry breeding, select a poultry batch only. Do not select livestock parents.')
+          return
+        }
+      } else {
+        if (selectedBreedingPoultryId) {
+          setError('Select a poultry batch only when the breeding species is poultry.')
+          return
+        }
+        if (selectedDamId && !breedingLivestock.some(item => item.id === selectedDamId && item.sex === 'female' && item.species === breedingSpecies)) {
+          setError('The dam must be a female animal of the selected species on this farm.')
+          return
+        }
+        if (selectedSireId && !breedingLivestock.some(item => item.id === selectedSireId && item.sex === 'male' && item.species === breedingSpecies)) {
+          setError('The sire must be a male animal of the selected species on this farm.')
+          return
+        }
       }
       if (values.offspring_count !== undefined && values.offspring_count !== '') {
         const offspringCount = Number(values.offspring_count)
@@ -1762,7 +1824,11 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
       const value = values[f.key]
       if (value !== undefined) payload[f.key] = f.type === 'number' && value !== '' ? Number(value) : value
     })
-    if (module === 'Poultry') { payload.status = 'active'; payload.opening_count = Number(payload.opening_count || 0); payload.current_count = Number(payload.current_count || payload.opening_count || 0) }
+    if (module === 'Poultry') {
+      payload.status = 'active'
+      payload.opening_count = String(values.opening_count ?? '').trim() === '' ? 0 : Number(values.opening_count)
+      payload.current_count = String(values.current_count ?? '').trim() === '' ? payload.opening_count : Number(values.current_count)
+    }
     if (module === 'Livestock') payload.status = 'active'
     if (module === 'Sales') {
       payload.customer_id = selectedSaleCustomerId
@@ -1925,24 +1991,26 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
           </select>}
           <small>{breedingFarmsLoading ? '' : breedingFarms.length ? 'The breeding record will be saved to this farm.' : 'No farms found for your account.'}</small>
         </label>
-        <label className="field"><span>Dam livestock (optional)</span>
-          {breedingTargetsLoading ? <select disabled><option>Loading livestock…</option></select> : <select value={selectedDamId} onChange={e => setSelectedDamId(e.target.value)}>
-            <option value="">None selected</option>
-            {breedingLivestock.map(animal => <option key={animal.id} value={animal.id}>{animal.tag_number || animal.name || animal.species || `Animal ${animal.id.slice(0, 8)}`}{animal.species ? ` — ${animal.species}` : ''}</option>)}
-          </select>}
-        </label>
-        <label className="field"><span>Sire livestock (optional)</span>
-          {breedingTargetsLoading ? <select disabled><option>Loading livestock…</option></select> : <select value={selectedSireId} onChange={e => setSelectedSireId(e.target.value)}>
-            <option value="">None selected</option>
-            {breedingLivestock.map(animal => <option key={animal.id} value={animal.id}>{animal.tag_number || animal.name || animal.species || `Animal ${animal.id.slice(0, 8)}`}{animal.species ? ` — ${animal.species}` : ''}</option>)}
-          </select>}
-        </label>
-        <label className="field"><span>Poultry batch (optional)</span>
-          {breedingTargetsLoading ? <select disabled><option>Loading poultry batches…</option></select> : <select value={selectedBreedingPoultryId} onChange={e => setSelectedBreedingPoultryId(e.target.value)}>
-            <option value="">None selected</option>
+        {values.species !== 'poultry' && <>
+          <label className="field"><span>Dam livestock (optional)</span>
+            {breedingTargetsLoading ? <select disabled><option>Loading livestock…</option></select> : <select value={selectedDamId} onChange={e => setSelectedDamId(e.target.value)}>
+              <option value="">None selected</option>
+              {breedingLivestock.filter(animal => animal.sex === 'female' && animal.species === values.species).map(animal => <option key={animal.id} value={animal.id}>{animal.tag_number || animal.name || animal.species || `Animal ${animal.id.slice(0, 8)}`}{animal.species ? ` — ${animal.species}` : ''}</option>)}
+            </select>}
+          </label>
+          <label className="field"><span>Sire livestock (optional)</span>
+            {breedingTargetsLoading ? <select disabled><option>Loading livestock…</option></select> : <select value={selectedSireId} onChange={e => setSelectedSireId(e.target.value)}>
+              <option value="">None selected</option>
+              {breedingLivestock.filter(animal => animal.sex === 'male' && animal.species === values.species).map(animal => <option key={animal.id} value={animal.id}>{animal.tag_number || animal.name || animal.species || `Animal ${animal.id.slice(0, 8)}`}{animal.species ? ` — ${animal.species}` : ''}</option>)}
+            </select>}
+          </label>
+        </>}
+        {values.species === 'poultry' && <label className="field"><span>Poultry batch *</span>
+          {breedingTargetsLoading ? <select disabled><option>Loading poultry batches…</option></select> : <select required value={selectedBreedingPoultryId} onChange={e => setSelectedBreedingPoultryId(e.target.value)}>
+            <option value="">Choose a poultry batch…</option>
             {breedingPoultry.map(batch => <option key={batch.id} value={batch.id}>{batch.batch_name || batch.bird_type || `Batch ${batch.id.slice(0, 8)}`}{batch.bird_type ? ` — ${batch.bird_type}` : ''}</option>)}
           </select>}
-        </label>
+        </label>}
       </>}
       {module === 'Customers' && <label className="field"><span>Farm *</span>
         {customerFarmsLoading ? <select disabled><option>Loading farms…</option></select> : <select required value={selectedCustomerFarmId} onChange={e => setSelectedCustomerFarmId(e.target.value)}>
@@ -2084,7 +2152,7 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
       {selectedFields.map(f => {
         const requiredPurchaseField = module === 'Purchases' && ['category', 'description', 'purchase_date', 'quantity', 'unit', 'total_amount', 'amount_paid', 'payment_status'].includes(f.key)
         const requiredSaleField = module === 'Sales' && ['sale_date', 'subtotal', 'discount', 'total_amount', 'amount_paid', 'status'].includes(f.key)
-        const requiredField = requiredPurchaseField || requiredSaleField || ['tag_number','batch_name','category','description','amount','title','production_type','record_type','condition_or_vaccine','feed_name','name','species'].includes(f.key)
+        const requiredField = requiredPurchaseField || requiredSaleField || (module === 'Production' && f.key === 'unit') || ['tag_number','batch_name','category','description','amount','title','production_type','record_type','condition_or_vaccine','feed_name','name','species'].includes(f.key)
         const min = f.type === 'number' ? module === 'Purchases' && f.key === 'quantity' ? Number.MIN_VALUE : 0 : undefined
         if (module === 'Sales' && (f.key === 'subtotal' || f.key === 'total_amount')) {
           const amount = f.key === 'subtotal' ? saleSubtotal : saleTotal
