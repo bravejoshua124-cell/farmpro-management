@@ -11,6 +11,16 @@ import { supabase, supabaseReady } from './supabase'
 type ModuleKey = 'Dashboard' | 'Livestock' | 'Poultry' | 'Health & Breeding' | 'Breeding Records' | 'Feed & Inventory' | 'Feed Logs' | 'Production' | 'Sales' | 'Purchases' | 'Expenses' | 'Tasks' | 'Customers' | 'Suppliers'
 type PageKey = ModuleKey | 'Manage Farms'
 type Row = Record<string, any>
+type SaleItemDraft = {
+  key: string
+  item_type: string
+  description: string
+  livestock_id: string
+  poultry_batch_id: string
+  quantity: string
+  unit: string
+  unit_price: string
+}
 type FarmValues = { name: string; location: string; phone: string; email: string; currency: string; area_acres: string; notes: string }
 type ReportingPeriod = 'week' | 'month' | 'last-month' | 'quarter' | 'year' | 'custom'
 type DateRange = { start: Date; end: Date }
@@ -38,6 +48,16 @@ const localDateString = (date: Date) => {
   const day = String(date.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
 }
+const newSaleItemDraft = (): SaleItemDraft => ({
+  key: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  item_type: '',
+  description: '',
+  livestock_id: '',
+  poultry_batch_id: '',
+  quantity: '',
+  unit: '',
+  unit_price: ''
+})
 const periodRange = (period: ReportingPeriod, customStart: string, customEnd: string): DateRange => {
   const today = new Date()
   const end = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1)
@@ -936,26 +956,46 @@ function EmptyState({ icon, title, text, action, onClick }: any) {
 function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }: any) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
-  const [values, setValues] = useState<Record<string,string>>(() => editingRecord ? {
-    species: editingRecord.species ?? '',
-    tag_number: editingRecord.tag_number ?? '',
-    name: editingRecord.name ?? '',
-    breed: editingRecord.breed ?? '',
-    sex: editingRecord.sex ?? '',
-    date_of_birth: editingRecord.date_of_birth ?? '',
-    acquired_on: editingRecord.acquired_on ?? '',
-    acquisition_type: editingRecord.acquisition_type ?? '',
-    purchase_cost: editingRecord.purchase_cost == null ? '' : String(editingRecord.purchase_cost),
-    weight_kg: editingRecord.weight_kg == null ? '' : String(editingRecord.weight_kg),
-    status: editingRecord.status ?? 'active',
-    dam_id: editingRecord.dam_id ?? '',
-    sire_id: editingRecord.sire_id ?? '',
-    notes: editingRecord.notes ?? ''
-  } : {
-    species: '', tag_number: '', name: '', breed: '', sex: '', date_of_birth: '',
-    acquired_on: '', acquisition_type: '', purchase_cost: '0', weight_kg: '',
-    status: 'active', dam_id: '', sire_id: '', notes: ''
+  const saleSaveInProgress = useRef(false)
+  const [values, setValues] = useState<Record<string,string>>((): Record<string,string> => {
+    if (editingRecord) {
+      return {
+        species: editingRecord.species ?? '',
+        tag_number: editingRecord.tag_number ?? '',
+        name: editingRecord.name ?? '',
+        breed: editingRecord.breed ?? '',
+        sex: editingRecord.sex ?? '',
+        date_of_birth: editingRecord.date_of_birth ?? '',
+        acquired_on: editingRecord.acquired_on ?? '',
+        acquisition_type: editingRecord.acquisition_type ?? '',
+        purchase_cost: editingRecord.purchase_cost == null ? '' : String(editingRecord.purchase_cost),
+        weight_kg: editingRecord.weight_kg == null ? '' : String(editingRecord.weight_kg),
+        status: editingRecord.status ?? 'active',
+        dam_id: editingRecord.dam_id ?? '',
+        sire_id: editingRecord.sire_id ?? '',
+        notes: editingRecord.notes ?? ''
+      }
+    }
+    if (module === 'Sales') {
+      return {
+        sale_date: '',
+        subtotal: '0',
+        discount: '0',
+        total_amount: '0',
+        amount_paid: '0',
+        status: 'unpaid',
+        reference_no: '',
+        payment_method: '',
+        notes: ''
+      }
+    }
+    return {
+      species: '', tag_number: '', name: '', breed: '', sex: '', date_of_birth: '',
+      acquired_on: '', acquisition_type: '', purchase_cost: '0', weight_kg: '',
+      status: 'active', dam_id: '', sire_id: '', notes: ''
+    }
   })
+  const [saleItems, setSaleItems] = useState<SaleItemDraft[]>(() => module === 'Sales' ? [newSaleItemDraft()] : [])
   const [parentAnimals, setParentAnimals] = useState<Row[]>([])
   const [parentAnimalsLoading, setParentAnimalsLoading] = useState(false)
   const [parentAnimalsError, setParentAnimalsError] = useState('')
@@ -974,10 +1014,22 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
   const [selectedCustomerFarmId, setSelectedCustomerFarmId] = useState('')
   const [customerFarmsLoading, setCustomerFarmsLoading] = useState(false)
   const [customerFarmsError, setCustomerFarmsError] = useState('')
+  const [saleCustomers, setSaleCustomers] = useState<Row[]>([])
+  const [selectedSaleCustomerId, setSelectedSaleCustomerId] = useState('')
+  const [saleCustomersLoading, setSaleCustomersLoading] = useState(false)
+  const [saleCustomersError, setSaleCustomersError] = useState('')
+  const [saleLivestock, setSaleLivestock] = useState<Row[]>([])
+  const [salePoultryBatches, setSalePoultryBatches] = useState<Row[]>([])
+  const [saleItemsLoading, setSaleItemsLoading] = useState(false)
+  const [saleItemsError, setSaleItemsError] = useState('')
   const [supplierFarms, setSupplierFarms] = useState<Row[]>([])
   const [selectedSupplierFarmId, setSelectedSupplierFarmId] = useState('')
   const [supplierFarmsLoading, setSupplierFarmsLoading] = useState(false)
   const [supplierFarmsError, setSupplierFarmsError] = useState('')
+  const [purchaseSuppliers, setPurchaseSuppliers] = useState<Row[]>([])
+  const [selectedPurchaseSupplierId, setSelectedPurchaseSupplierId] = useState('')
+  const [purchaseSuppliersLoading, setPurchaseSuppliersLoading] = useState(false)
+  const [purchaseSuppliersError, setPurchaseSuppliersError] = useState('')
   const [feedFarms, setFeedFarms] = useState<Row[]>([])
   const [selectedFeedFarmId, setSelectedFeedFarmId] = useState('')
   const [feedFarmsLoading, setFeedFarmsLoading] = useState(false)
@@ -1003,8 +1055,8 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
     Poultry: [{key:'batch_name',label:'Batch name'},{key:'bird_type',label:'Bird type',options:['layers','broilers','indigenous','breeders','other']},{key:'breed',label:'Breed'},{key:'start_date',label:'Start date',type:'date'},{key:'opening_count',label:'Starting bird count',type:'number'},{key:'current_count',label:'Current bird count',type:'number'}],
     Expenses: [{key:'category',label:'Category',options:['Feed','Veterinary','Labour','Transport','Utilities','Repairs','Other']},{key:'description',label:'Description'},{key:'amount',label:'Amount (UGX)',type:'number'},{key:'expense_date',label:'Date',type:'date'},{key:'payee',label:'Paid to'},{key:'payment_method',label:'Payment method',options:['Cash','Mobile Money','Bank transfer','Other']}],
     Tasks: [{key:'title',label:'Task title'},{key:'category',label:'Category'},{key:'due_date',label:'Due date',type:'date'},{key:'priority',label:'Priority',options:['low','medium','high','urgent']},{key:'status',label:'Status',options:['pending','in_progress','completed']},{key:'assigned_to',label:'Assigned to'}],
-    Sales: [{key:'reference_no',label:'Reference number'},{key:'sale_date',label:'Sale date',type:'date'},{key:'total_amount',label:'Total amount (UGX)',type:'number'},{key:'amount_paid',label:'Amount paid (UGX)',type:'number'},{key:'status',label:'Payment status',options:['completed','part_paid','unpaid']}],
-    Purchases: [{key:'category',label:'Category',options:['Feed','Medicine','Livestock','Equipment','Other']},{key:'description',label:'Description'},{key:'purchase_date',label:'Date',type:'date'},{key:'total_amount',label:'Total amount (UGX)',type:'number'},{key:'amount_paid',label:'Amount paid (UGX)',type:'number'},{key:'payment_status',label:'Payment status',options:['paid','part_paid','unpaid']}],
+    Sales: [{key:'reference_no',label:'Reference number'},{key:'sale_date',label:'Sale date',type:'date'},{key:'subtotal',label:'Subtotal (UGX)',type:'number'},{key:'discount',label:'Discount (UGX)',type:'number'},{key:'total_amount',label:'Total amount (UGX)',type:'number'},{key:'amount_paid',label:'Amount paid (UGX)',type:'number'},{key:'status',label:'Sale status',options:['draft','completed','part_paid','unpaid','cancelled']},{key:'payment_method',label:'Payment method',options:['Cash','Mobile Money','Bank Transfer','Other']},{key:'notes',label:'Notes'}],
+    Purchases: [{key:'category',label:'Category',options:['Feed','Medicine','Livestock','Equipment','Other']},{key:'description',label:'Description'},{key:'purchase_date',label:'Date',type:'date'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bag, etc.)'},{key:'total_amount',label:'Total amount (UGX)',type:'number'},{key:'amount_paid',label:'Amount paid (UGX)',type:'number'},{key:'payment_status',label:'Payment status',options:['paid','part_paid','unpaid']}],
     'Feed & Inventory': [{key:'feed_name',label:'Feed name'},{key:'feed_type',label:'Feed type'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bag, etc.)'},{key:'reorder_level',label:'Reorder level',type:'number'},{key:'unit_cost',label:'Unit cost (UGX)',type:'number'}],
     'Feed Logs': [{key:'fed_on',label:'Date',type:'date'},{key:'quantity',label:'Quantity',type:'number'},{key:'unit',label:'Unit (kg, bags, litres, etc.)'},{key:'cost',label:'Cost (UGX)',type:'number'},{key:'notes',label:'Notes'}],
     'Breeding Records': [{key:'species',label:'Species'},{key:'mating_date',label:'Mating date',type:'date'},{key:'expected_date',label:'Expected date',type:'date'},{key:'outcome_date',label:'Outcome date',type:'date'},{key:'outcome',label:'Outcome'},{key:'offspring_count',label:'Offspring count',type:'number'},{key:'notes',label:'Notes'}],
@@ -1016,6 +1068,16 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
   const selectedFields = fields[module] || []
   const selectedMother = parentAnimals.find(animal => animal.id === values.dam_id)
   const selectedSire = parentAnimals.find(animal => animal.id === values.sire_id)
+  const saleLineTotal = (item: SaleItemDraft) => {
+    const quantity = Number(item.quantity)
+    const unitPrice = Number(item.unit_price)
+    return item.quantity.trim() && item.unit_price.trim() && Number.isFinite(quantity) && Number.isFinite(unitPrice)
+      ? quantity * unitPrice
+      : 0
+  }
+  const saleSubtotal = saleItems.reduce((sum, item) => sum + saleLineTotal(item), 0)
+  const saleDiscount = Number(values.discount)
+  const saleTotal = saleSubtotal - (Number.isFinite(saleDiscount) ? saleDiscount : 0)
 
   useEffect(() => {
     if (module !== 'Livestock') return
@@ -1189,6 +1251,65 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
   }, [module, userId, farmId])
 
   useEffect(() => {
+    if (module !== 'Sales') return
+    if (!farmId) {
+      setSaleCustomers([])
+      setSelectedSaleCustomerId('')
+      setSaleCustomersLoading(false)
+      return
+    }
+    let cancelled = false
+    async function loadSaleCustomers() {
+      setSaleCustomersLoading(true)
+      setSaleCustomersError('')
+      setSaleCustomers([])
+      setSelectedSaleCustomerId('')
+      const { data, error: queryError } = await supabase.from('customers')
+        .select('id, name')
+        .eq('owner_id', userId)
+        .eq('farm_id', farmId)
+        .order('name', { ascending: true })
+      if (cancelled) return
+      if (queryError) setSaleCustomersError(queryError.message)
+      else setSaleCustomers(data || [])
+      setSaleCustomersLoading(false)
+    }
+    void loadSaleCustomers()
+    return () => { cancelled = true }
+  }, [module, userId, farmId])
+
+  useEffect(() => {
+    if (module !== 'Sales') return
+    if (!farmId) {
+      setSaleLivestock([])
+      setSalePoultryBatches([])
+      setSaleItemsLoading(false)
+      return
+    }
+    let cancelled = false
+    async function loadSaleItemRecords() {
+      setSaleItemsLoading(true)
+      setSaleItemsError('')
+      setSaleLivestock([])
+      setSalePoultryBatches([])
+      const [livestockResult, poultryResult] = await Promise.all([
+        supabase.from('livestock').select('id, tag_number, name, species')
+          .eq('owner_id', userId).eq('farm_id', farmId).order('tag_number', { ascending: true }),
+        supabase.from('poultry_batches').select('id, batch_name, bird_type')
+          .eq('owner_id', userId).eq('farm_id', farmId).order('batch_name', { ascending: true })
+      ])
+      if (cancelled) return
+      setSaleLivestock(livestockResult.data || [])
+      setSalePoultryBatches(poultryResult.data || [])
+      const queryErrors = [livestockResult.error?.message, poultryResult.error?.message].filter(Boolean)
+      if (queryErrors.length) setSaleItemsError(queryErrors.join(' '))
+      setSaleItemsLoading(false)
+    }
+    void loadSaleItemRecords()
+    return () => { cancelled = true }
+  }, [module, userId, farmId])
+
+  useEffect(() => {
     if (module !== 'Feed Logs') return
     if (!farmId) {
       setFeedFarms([])
@@ -1261,6 +1382,34 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
     return () => { cancelled = true }
   }, [module, userId, farmId])
 
+  useEffect(() => {
+    if (module !== 'Purchases') return
+    if (!farmId) {
+      setPurchaseSuppliers([])
+      setSelectedPurchaseSupplierId('')
+      setPurchaseSuppliersLoading(false)
+      return
+    }
+    let cancelled = false
+    async function loadPurchaseSuppliers() {
+      setPurchaseSuppliersLoading(true)
+      setPurchaseSuppliersError('')
+      setPurchaseSuppliers([])
+      setSelectedPurchaseSupplierId('')
+      const { data, error: queryError } = await supabase.from('suppliers')
+        .select('id, name')
+        .eq('owner_id', userId)
+        .eq('farm_id', farmId)
+        .order('name', { ascending: true })
+      if (cancelled) return
+      if (queryError) setPurchaseSuppliersError(queryError.message)
+      else setPurchaseSuppliers(data || [])
+      setPurchaseSuppliersLoading(false)
+    }
+    void loadPurchaseSuppliers()
+    return () => { cancelled = true }
+  }, [module, userId, farmId])
+
   async function saveFarm(e: FormEvent) {
     e.preventDefault(); setSaving(true); setError('')
     try {
@@ -1271,7 +1420,9 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
     finally { setSaving(false) }
   }
   async function save(e: FormEvent) {
-    e.preventDefault(); setError('')
+    e.preventDefault()
+    if (module === 'Sales' && saleSaveInProgress.current) return
+    setError('')
     if (!farmId) {
       setError('Select a farm before saving this record.')
       return
@@ -1454,6 +1605,129 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
       setError('Selected livestock or poultry batch does not belong to the current farm.')
       return
     }
+    if (module === 'Purchases') {
+      const quantity = Number(values.quantity)
+      const totalAmount = Number(values.total_amount)
+      const amountPaid = Number(values.amount_paid)
+      if (!values.purchase_date || Number.isNaN(Date.parse(`${values.purchase_date}T00:00:00`))) {
+        setError('Enter a valid purchase date.')
+        return
+      }
+      if (!['Feed', 'Medicine', 'Livestock', 'Equipment', 'Other'].includes(values.category || '')) {
+        setError('Choose a valid purchase category.')
+        return
+      }
+      if (!String(values.description || '').trim()) {
+        setError('Enter a purchase description.')
+        return
+      }
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        setError('Quantity must be a number greater than zero.')
+        return
+      }
+      if (!String(values.unit || '').trim()) {
+        setError('Enter a unit for the purchase quantity.')
+        return
+      }
+      if (!String(values.total_amount ?? '').trim() || !Number.isFinite(totalAmount) || totalAmount <= 0) {
+        setError('Total amount must be a valid amount greater than zero.')
+        return
+      }
+      if (!String(values.amount_paid ?? '').trim() || !Number.isFinite(amountPaid) || amountPaid < 0 || amountPaid > totalAmount) {
+        setError('Amount paid must be a valid amount between zero and the total amount.')
+        return
+      }
+      if (!['paid', 'part_paid', 'unpaid'].includes(values.payment_status || '')) {
+        setError('Choose a valid payment status.')
+        return
+      }
+      if (selectedPurchaseSupplierId && !purchaseSuppliers.some(supplier => supplier.id === selectedPurchaseSupplierId)) {
+        setError('Choose a supplier belonging to the currently selected farm, or leave the supplier blank.')
+        return
+      }
+    }
+    if (module === 'Sales') {
+      if (!saleItems.length) {
+        setError('Add at least one sale item.')
+        return
+      }
+      for (const [index, item] of saleItems.entries()) {
+        if (!['livestock', 'poultry', 'eggs', 'milk', 'manure', 'other'].includes(item.item_type)) {
+          setError(`Choose an item type for sale item ${index + 1}.`)
+          return
+        }
+        const quantity = Number(item.quantity)
+        const unitPrice = Number(item.unit_price)
+        if (!item.quantity.trim() || !Number.isFinite(quantity) || quantity <= 0) {
+          setError(`Sale item ${index + 1} quantity must be greater than zero.`)
+          return
+        }
+        if (!item.unit.trim()) {
+          setError(`Enter a unit for sale item ${index + 1}.`)
+          return
+        }
+        if (!item.unit_price.trim() || !Number.isFinite(unitPrice) || unitPrice < 0 ||
+          !Number.isFinite(quantity * unitPrice)) {
+          setError(`Sale item ${index + 1} unit price must be a valid non-negative amount.`)
+          return
+        }
+        if (item.item_type === 'livestock') {
+          if (!item.livestock_id || !saleLivestock.some(animal => animal.id === item.livestock_id)) {
+            setError(`Choose a livestock record for sale item ${index + 1}.`)
+            return
+          }
+        } else if (item.item_type === 'poultry') {
+          if (!item.poultry_batch_id || !salePoultryBatches.some(batch => batch.id === item.poultry_batch_id)) {
+            setError(`Choose a poultry batch for sale item ${index + 1}.`)
+            return
+          }
+        } else if (!item.description.trim()) {
+          setError(`Enter a description for sale item ${index + 1}.`)
+          return
+        }
+      }
+      const saleDate = values.sale_date || ''
+      const parsedSaleDate = new Date(`${saleDate}T00:00:00`)
+      const subtotal = saleSubtotal
+      const discount = Number(values.discount)
+      const totalAmount = subtotal - discount
+      const amountPaid = Number(values.amount_paid)
+      const saleStatus = values.status || ''
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(saleDate) || Number.isNaN(parsedSaleDate.getTime()) || localDateString(parsedSaleDate) !== saleDate) {
+        setError('Enter a valid sale date.')
+        return
+      }
+      if (!String(values.subtotal ?? '').trim() || !Number.isFinite(subtotal) || subtotal < 0) {
+        setError('Subtotal must be a valid non-negative amount.')
+        return
+      }
+      if (!String(values.discount ?? '').trim() || !Number.isFinite(discount) || discount < 0 || discount > subtotal) {
+        setError('Discount must be a valid amount between zero and the subtotal.')
+        return
+      }
+      if (!Number.isFinite(totalAmount) || totalAmount < 0) {
+        setError('Discount cannot exceed the item subtotal, and total amount cannot be negative.')
+        return
+      }
+      if (!String(values.amount_paid ?? '').trim() || !Number.isFinite(amountPaid) || amountPaid < 0 || amountPaid > totalAmount) {
+        setError('Amount paid must be a valid amount between zero and the total amount.')
+        return
+      }
+      if (!['draft', 'completed', 'part_paid', 'unpaid', 'cancelled'].includes(saleStatus)) {
+        setError('Choose a valid sale status.')
+        return
+      }
+      if ((saleStatus === 'unpaid' && amountPaid !== 0) ||
+        (saleStatus === 'part_paid' && !(amountPaid > 0 && amountPaid < totalAmount)) ||
+        (saleStatus === 'completed' && amountPaid !== totalAmount)) {
+        setError('Payment status must agree with the amount paid.')
+        return
+      }
+      if (!selectedSaleCustomerId || !saleCustomers.some(customer => customer.id === selectedSaleCustomerId)) {
+        setError('Select a customer belonging to the currently selected farm.')
+        return
+      }
+    }
     if (module === 'Breeding Records') {
       if (!selectedBreedingFarmId) {
         setError('Select a farm before saving the breeding record.')
@@ -1481,13 +1755,24 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
         }
       }
     }
+    if (module === 'Sales') saleSaveInProgress.current = true
     setSaving(true)
-    const payload: Row = { ...values, owner_id: userId, farm_id: farmId }
-    selectedFields.forEach(f => { if (f.type === 'number' && payload[f.key] !== undefined && payload[f.key] !== '') payload[f.key] = Number(payload[f.key]) })
+    const payload: Row = { owner_id: userId, farm_id: farmId }
+    selectedFields.forEach(f => {
+      const value = values[f.key]
+      if (value !== undefined) payload[f.key] = f.type === 'number' && value !== '' ? Number(value) : value
+    })
     if (module === 'Poultry') { payload.status = 'active'; payload.opening_count = Number(payload.opening_count || 0); payload.current_count = Number(payload.current_count || payload.opening_count || 0) }
     if (module === 'Livestock') payload.status = 'active'
-    if (module === 'Sales') { payload.subtotal = Number(payload.total_amount || 0); payload.discount = 0 }
-    if (module === 'Purchases') payload.unit_cost = Number(payload.total_amount || 0)
+    if (module === 'Sales') {
+      payload.customer_id = selectedSaleCustomerId
+      payload.subtotal = saleSubtotal
+      payload.total_amount = saleTotal
+    }
+    if (module === 'Purchases') {
+      payload.unit_cost = Number(values.total_amount) / Number(values.quantity)
+      payload.supplier_id = selectedPurchaseSupplierId || null
+    }
     if (module === 'Tasks') payload.status = payload.status || 'pending'
     if (module === 'Health & Breeding' || module === 'Production') {
       if (selectedLivestockId) payload.livestock_id = selectedLivestockId
@@ -1525,11 +1810,77 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
           await verifyFarmRecordIds('poultry_batches', userId, farmId, [selectedBreedingPoultryId]))) {
         throw new Error('Selected breeding animal or poultry batch does not belong to the current farm.')
       }
-      const { error: insertError } = await supabase.from(table).insert(payload)
-      if (insertError) throw insertError
+      if (module === 'Purchases' &&
+        !(await verifyFarmRecordIds('suppliers', userId, farmId, [selectedPurchaseSupplierId]))) {
+        throw new Error('Selected supplier does not belong to the currently signed-in user and selected farm.')
+      }
+      if (module === 'Sales' &&
+        !(await verifyFarmRecordIds('customers', userId, farmId, [selectedSaleCustomerId]))) {
+        throw new Error('Selected customer does not belong to the currently signed-in user and selected farm.')
+      }
+      if (module === 'Sales') {
+        const livestockIds = saleItems.filter(item => item.item_type === 'livestock').map(item => item.livestock_id)
+        const poultryBatchIds = saleItems.filter(item => item.item_type === 'poultry').map(item => item.poultry_batch_id)
+        if (!(await verifyFarmRecordIds('livestock', userId, farmId, livestockIds) &&
+          await verifyFarmRecordIds('poultry_batches', userId, farmId, poultryBatchIds))) {
+          throw new Error('A selected livestock record or poultry batch does not belong to the currently signed-in user and selected farm.')
+        }
+      }
+      if (module === 'Sales') {
+        const { data: sale, error: saleInsertError } = await supabase.from('sales').insert(payload).select('id').single()
+        if (saleInsertError) throw saleInsertError
+        if (!sale?.id) throw new Error('The sale was saved, but its generated ID could not be retrieved; sale items were not saved.')
+        const saleItemsPayload = saleItems.map(item => {
+          const livestock = item.item_type === 'livestock'
+            ? saleLivestock.find(animal => animal.id === item.livestock_id)
+            : null
+          const poultry = item.item_type === 'poultry'
+            ? salePoultryBatches.find(batch => batch.id === item.poultry_batch_id)
+            : null
+          const description = livestock
+            ? [livestock.tag_number, livestock.name, livestock.species].filter(Boolean).join(' — ') || 'Livestock'
+            : poultry
+              ? [poultry.batch_name, poultry.bird_type].filter(Boolean).join(' — ') || 'Poultry'
+              : item.description.trim()
+          const quantity = Number(item.quantity)
+          const unitPrice = Number(item.unit_price)
+          return {
+            owner_id: userId,
+            sale_id: sale.id,
+            item_type: item.item_type,
+            description,
+            quantity,
+            unit: item.unit.trim(),
+            unit_price: unitPrice,
+            line_total: quantity * unitPrice,
+            livestock_id: item.item_type === 'livestock' ? item.livestock_id : null,
+            poultry_batch_id: item.item_type === 'poultry' ? item.poultry_batch_id : null
+          }
+        })
+        const { error: itemsInsertError } = await supabase.from('sale_items').insert(saleItemsPayload)
+        if (itemsInsertError) {
+          const { data: removedSale, error: cleanupError } = await supabase.from('sales').delete()
+            .eq('id', sale.id)
+            .eq('owner_id', userId)
+            .eq('farm_id', farmId)
+            .select('id')
+            .maybeSingle()
+          if (cleanupError || !removedSale) {
+            const cleanupMessage = cleanupError?.message || 'The newly created sale could not be confirmed as deleted.'
+            throw new Error(`Sale items could not be saved (${itemsInsertError.message}). Cleanup also failed (${cleanupMessage}); the new sale may remain without its items.`)
+          }
+          throw new Error(`Sale items could not be saved. The newly created sale was removed. ${itemsInsertError.message}`)
+        }
+      } else {
+        const { error: insertError } = await supabase.from(table).insert(payload)
+        if (insertError) throw insertError
+      }
       await onSaved()
     } catch (e: any) { setError(e.message || 'Unable to save record') }
-    finally { setSaving(false) }
+    finally {
+      setSaving(false)
+      if (module === 'Sales') saleSaveInProgress.current = false
+    }
   }
   return <div className="modal-backdrop" onClick={onClose}><div className={`modal ${module === 'Livestock' ? 'livestock-form-modal' : ''}`} onClick={e => e.stopPropagation()}><div className="modal-head"><div><span className="eyebrow">{editingRecord ? 'EDIT FARM RECORD' : 'NEW FARM RECORD'}</span><h2>{editingRecord ? `Edit ${module.toLowerCase()}` : `Add ${module === 'Poultry' ? 'poultry batch' : module.toLowerCase()}`}</h2></div><button className="icon-button" onClick={onClose}><X size={19}/></button></div>
     {!farmId ? <form onSubmit={saveFarm}><div className="setup-farm-note"><Sprout size={24}/><strong>First, tell us about your farm</strong><p>This creates your private farm profile. You can add livestock and other records right after.</p></div><div className="form-grid"><label className="field"><span>Farm name *</span><input required value={farmValues.name} onChange={e => setFarmValues({...farmValues,name:e.target.value})} placeholder="e.g. Green Valley Farm"/></label><label className="field"><span>Location</span><input value={farmValues.location} onChange={e => setFarmValues({...farmValues,location:e.target.value})} placeholder="District / village"/></label><label className="field"><span>Phone</span><input value={farmValues.phone} onChange={e => setFarmValues({...farmValues,phone:e.target.value})} placeholder="Contact number"/></label><label className="field"><span>Email</span><input type="email" value={farmValues.email} onChange={e => setFarmValues({...farmValues,email:e.target.value})} placeholder="Farm email (optional)"/></label><label className="field"><span>Currency</span><select value={farmValues.currency} onChange={e => setFarmValues({...farmValues,currency:e.target.value})}><option value="UGX">UGX — Ugandan Shilling</option><option value="USD">USD — US Dollar</option><option value="KES">KES — Kenyan Shilling</option><option value="TZS">TZS — Tanzanian Shilling</option></select></label></div>{error && <div className="form-error">{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={saving}>{saving ? 'Creating farm…' : 'Create farm profile'}</button></div></form> :
@@ -1653,16 +2004,106 @@ function RecordModal({ module, farmId, userId, editingRecord, onClose, onSaved }
           <small>{poultryBatches.length ? 'Choose a batch if this record applies to poultry.' : !selectorsLoading ? 'No active poultry batches found for your account.' : ''}</small>
         </label>
       </>}
-      {selectedFields.map(f => <label key={f.key} className="field"><span>{f.label}</span>{f.options ? <select required={['species','tag_number','batch_name','category','description','amount','title','production_type','record_type','condition_or_vaccine','name'].includes(f.key)} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}><option value="">Choose…</option>{f.options.map(o => <option key={o} value={o}>{o.replace(/_/g,' ')}</option>)}</select> : <input required={['tag_number','batch_name','category','description','amount','title','production_type','record_type','condition_or_vaccine','feed_name','name','species'].includes(f.key)} type={f.type || 'text'} min={f.type === 'number' ? 0 : undefined} step={module === 'Breeding Records' && f.key === 'offspring_count' ? 1 : undefined} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}/>}</label>)}</div>}
+      {module === 'Sales' && <label className="field"><span>Customer *</span>
+        <select required disabled={saleCustomersLoading} value={selectedSaleCustomerId} onChange={e => setSelectedSaleCustomerId(e.target.value)}>
+          <option value="">{saleCustomersLoading ? 'Loading customers…' : 'Choose a customer…'}</option>
+          {saleCustomers.map(customer => <option key={customer.id} value={customer.id}>{customer.name || `Customer ${customer.id.slice(0, 8)}`}</option>)}
+        </select>
+        <small>{saleCustomersLoading ? '' : 'Customers are limited to your selected farm.'}</small>
+      </label>}
+      {module === 'Sales' && <section className="sale-items-section" style={{ gridColumn: '1 / -1', minWidth: 0 }}>
+        <div className="module-toolbar">
+          <div><h3>Sale Items</h3><p>Add the items included in this sale.</p></div>
+          <button type="button" className="secondary-button" onClick={() => setSaleItems(current => [...current, newSaleItemDraft()])} disabled={saving}><Plus size={16}/> Add item</button>
+        </div>
+        {saleItemsLoading && <div className="table-loading">Loading same-farm livestock and poultry…</div>}
+        {saleItems.map((item, index) => {
+          const selectedAnimal = saleLivestock.find(animal => animal.id === item.livestock_id)
+          const selectedBatch = salePoultryBatches.find(batch => batch.id === item.poultry_batch_id)
+          return <div key={item.key} className="panel sale-item-row" style={{ padding: '16px', marginBottom: '12px' }}>
+            <div className="module-toolbar">
+              <strong>Item {index + 1}</strong>
+              <button type="button" className="secondary-button" onClick={() => setSaleItems(current => current.filter(row => row.key !== item.key))} disabled={saving} aria-label={`Remove sale item ${index + 1}`}><X size={15}/> Remove</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 180px), 1fr))', gap: '12px' }}>
+              <label className="field"><span>Item type *</span>
+                <select required disabled={saving} value={item.item_type} onChange={e => setSaleItems(current => current.map(row => row.key === item.key ? { ...row, item_type: e.target.value, description: '', livestock_id: '', poultry_batch_id: '' } : row))}>
+                  <option value="">Choose item type…</option>
+                  {['livestock', 'poultry', 'eggs', 'milk', 'manure', 'other'].map(type => <option key={type} value={type}>{type[0].toUpperCase() + type.slice(1)}</option>)}
+                </select>
+              </label>
+              {item.item_type === 'livestock' ? <>
+                <label className="field"><span>Livestock record *</span>
+                  <select required disabled={saving || saleItemsLoading} value={item.livestock_id} onChange={e => {
+                    const animal = saleLivestock.find(row => row.id === e.target.value)
+                    const description = animal ? [animal.tag_number, animal.name, animal.species].filter(Boolean).join(' — ') || 'Livestock' : ''
+                    setSaleItems(current => current.map(row => row.key === item.key ? { ...row, livestock_id: e.target.value, description, poultry_batch_id: '' } : row))
+                  }}>
+                    <option value="">{saleItemsLoading ? 'Loading livestock…' : 'Choose livestock…'}</option>
+                    {saleLivestock.map(animal => <option key={animal.id} value={animal.id}>{[animal.tag_number, animal.name, animal.species].filter(Boolean).join(' — ') || `Livestock ${animal.id.slice(0, 8)}`}</option>)}
+                  </select>
+                </label>
+                <label className="field"><span>Description</span><input readOnly value={selectedAnimal ? [selectedAnimal.tag_number, selectedAnimal.name, selectedAnimal.species].filter(Boolean).join(' — ') || 'Livestock' : ''}/></label>
+              </> : item.item_type === 'poultry' ? <>
+                <label className="field"><span>Poultry batch *</span>
+                  <select required disabled={saving || saleItemsLoading} value={item.poultry_batch_id} onChange={e => {
+                    const batch = salePoultryBatches.find(row => row.id === e.target.value)
+                    const description = batch ? [batch.batch_name, batch.bird_type].filter(Boolean).join(' — ') || 'Poultry' : ''
+                    setSaleItems(current => current.map(row => row.key === item.key ? { ...row, poultry_batch_id: e.target.value, description, livestock_id: '' } : row))
+                  }}>
+                    <option value="">{saleItemsLoading ? 'Loading batches…' : 'Choose poultry batch…'}</option>
+                    {salePoultryBatches.map(batch => <option key={batch.id} value={batch.id}>{[batch.batch_name, batch.bird_type].filter(Boolean).join(' — ') || `Batch ${batch.id.slice(0, 8)}`}</option>)}
+                  </select>
+                </label>
+                <label className="field"><span>Description</span><input readOnly value={selectedBatch ? [selectedBatch.batch_name, selectedBatch.bird_type].filter(Boolean).join(' — ') || 'Poultry' : ''}/></label>
+              </> : item.item_type && <label className="field"><span>Description *</span>
+                <input required disabled={saving} value={item.description} onChange={e => setSaleItems(current => current.map(row => row.key === item.key ? { ...row, description: e.target.value } : row))}/>
+              </label>}
+              <label className="field"><span>Quantity *</span>
+                <input type="number" min={Number.MIN_VALUE} step="any" required disabled={saving} value={item.quantity} onChange={e => setSaleItems(current => current.map(row => row.key === item.key ? { ...row, quantity: e.target.value } : row))}/>
+              </label>
+              <label className="field"><span>Unit *</span>
+                <input required disabled={saving} value={item.unit} placeholder="e.g. head, tray, litre" onChange={e => setSaleItems(current => current.map(row => row.key === item.key ? { ...row, unit: e.target.value } : row))}/>
+              </label>
+              <label className="field"><span>Unit price (UGX) *</span>
+                <input type="number" min="0" step="any" required disabled={saving} value={item.unit_price} onChange={e => setSaleItems(current => current.map(row => row.key === item.key ? { ...row, unit_price: e.target.value } : row))}/>
+              </label>
+              <div className="field"><span>Line total</span><strong>{currency(saleLineTotal(item))}</strong></div>
+            </div>
+          </div>
+        })}
+        <div className="module-toolbar"><span>{saleItems.length} item{saleItems.length === 1 ? '' : 's'}</span><strong>Subtotal: {currency(saleSubtotal)}</strong></div>
+      </section>}
+      {module === 'Purchases' && <label className="field"><span>Supplier</span>
+        <select disabled={purchaseSuppliersLoading} value={selectedPurchaseSupplierId} onChange={e => setSelectedPurchaseSupplierId(e.target.value)}>
+          <option value="">{purchaseSuppliersLoading ? 'Loading suppliers…' : 'No supplier selected'}</option>
+          {purchaseSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.name || `Supplier ${supplier.id.slice(0, 8)}`}</option>)}
+        </select>
+        <small>{purchaseSuppliersLoading ? '' : 'Suppliers are limited to your selected farm.'}</small>
+      </label>}
+      {selectedFields.map(f => {
+        const requiredPurchaseField = module === 'Purchases' && ['category', 'description', 'purchase_date', 'quantity', 'unit', 'total_amount', 'amount_paid', 'payment_status'].includes(f.key)
+        const requiredSaleField = module === 'Sales' && ['sale_date', 'subtotal', 'discount', 'total_amount', 'amount_paid', 'status'].includes(f.key)
+        const requiredField = requiredPurchaseField || requiredSaleField || ['tag_number','batch_name','category','description','amount','title','production_type','record_type','condition_or_vaccine','feed_name','name','species'].includes(f.key)
+        const min = f.type === 'number' ? module === 'Purchases' && f.key === 'quantity' ? Number.MIN_VALUE : 0 : undefined
+        if (module === 'Sales' && (f.key === 'subtotal' || f.key === 'total_amount')) {
+          const amount = f.key === 'subtotal' ? saleSubtotal : saleTotal
+          return <label key={f.key} className="field"><span>{f.label}</span><input type="number" readOnly value={Number.isFinite(amount) ? amount : ''}/></label>
+        }
+        return <label key={f.key} className="field"><span>{f.label}</span>{f.options ? <select required={requiredField} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}><option value="">Choose…</option>{f.options.map(o => <option key={o} value={o}>{o.replace(/_/g,' ')}</option>)}</select> : <input required={requiredField} type={f.type || 'text'} min={module === 'Sales' && f.key === 'discount' ? 0 : min} max={module === 'Sales' && f.key === 'discount' ? saleSubtotal : undefined} step={f.type === 'number' ? 'any' : undefined} value={values[f.key] || ''} onChange={e => setValues({...values,[f.key]:e.target.value})}/>}</label>
+      })}</div>}
       {selectorsError && (module === 'Health & Breeding' || module === 'Production') && <div className="form-error">Unable to load animal or poultry options: {selectorsError}</div>}
       {parentAnimalsError && module === 'Livestock' && <div className="form-error">Unable to load same-farm parent animals: {parentAnimalsError}</div>}
       {customerFarmsError && module === 'Customers' && <div className="form-error">Unable to load farms: {customerFarmsError}</div>}
+      {saleCustomersError && module === 'Sales' && <div className="form-error">Unable to load customers: {saleCustomersError}</div>}
+      {saleItemsError && module === 'Sales' && <div className="form-error">Unable to load livestock or poultry options: {saleItemsError}</div>}
       {supplierFarmsError && module === 'Suppliers' && <div className="form-error">Unable to load farms: {supplierFarmsError}</div>}
+      {purchaseSuppliersError && module === 'Purchases' && <div className="form-error">Unable to load suppliers: {purchaseSuppliersError}</div>}
       {feedFarmsError && module === 'Feed Logs' && <div className="form-error">Unable to load farms: {feedFarmsError}</div>}
       {feedTargetError && module === 'Feed Logs' && <div className="form-error">Unable to load feed log options: {feedTargetError}</div>}
       {breedingFarmsError && module === 'Breeding Records' && <div className="form-error">Unable to load farms: {breedingFarmsError}</div>}
       {breedingTargetsError && module === 'Breeding Records' && <div className="form-error">Unable to load breeding relationships: {breedingTargetsError}</div>}
-      {error && <div className="form-error">{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={saving || selectorsLoading || parentAnimalsLoading || (module === 'Feed Logs' && (feedFarmsLoading || feedTargetLoading)) || (module === 'Breeding Records' && (breedingFarmsLoading || breedingTargetsLoading))}>{saving ? 'Saving…' : module === 'Livestock' ? (editingRecord ? 'Save changes' : 'Save livestock') : 'Save record'}</button></div></form>}
+      {error && <div className="form-error">{error}</div>}<div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" disabled={saving || selectorsLoading || parentAnimalsLoading || (module === 'Sales' && (saleCustomersLoading || saleItemsLoading)) || (module === 'Purchases' && purchaseSuppliersLoading) || (module === 'Feed Logs' && (feedFarmsLoading || feedTargetLoading)) || (module === 'Breeding Records' && (breedingFarmsLoading || breedingTargetsLoading))}>{saving ? 'Saving…' : module === 'Livestock' ? (editingRecord ? 'Save changes' : 'Save livestock') : 'Save record'}</button></div></form>}
   </div></div>
 }
 
