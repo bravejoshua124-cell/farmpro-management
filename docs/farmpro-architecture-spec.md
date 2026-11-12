@@ -14,7 +14,7 @@ The design follows these decisions:
 - Purchases record received inventory, not purchase orders. There is no unfulfilled-order workflow.
 - Sales may record inventory products, individual animals, or a number of birds from a poultry batch.
 - Inventory, flock counts, document totals, payment balances, and animal status are derived from source records, not manually maintained totals.
-- V1 recommendation: do not add livestock `acquisition_type` or `purchase_cost`. An approval decision is required before implementation because excluding them means livestock acquisition cash outflows and payables are not included in finance reports.
+- Approved v1 scope excludes livestock `acquisition_type`, `purchase_cost`, and livestock acquisition-cost accounting. Animal and poultry records retain `acquired_on` for husbandry, but purchases of livestock, their acquisition outflows, and related supplier payables are not represented in finance reports.
 - Money uses the farm's currency and is stored to two decimal places. Currency conversion and tax accounting are out of scope.
 - Quantities use the item's single base unit. Unit conversion is not supported in v1.
 - Date-only operational events use `date`; audit and creation times use `timestamptz`.
@@ -123,10 +123,10 @@ Purpose: represent a poultry group whose individual birds are not tagged.
 | `purpose` | `text` | Required; user-entered | `eggs`, `meat`, `breeding`, `mixed` | Poultry batch form |
 | `batch_name` | `text` | Optional; user-entered | Trimmed; useful only when user wants a label | Poultry batch form |
 | `acquired_on` | `date` | Required; user-entered | Default today; form and database trigger reject future dates | Poultry batch form |
-| `initial_count` | `integer` | Required; user-entered | Greater than zero | Poultry batch form |
+| `initial_count` | `integer` | Required; user-entered | Greater than zero; editable only before any batch event or sale exists | Poultry batch form |
 | `created_at` | `timestamptz` | Required; system | `now()` | Automatic |
 
-Checks constrain species, purpose, and `initial_count > 0`. Index `(farm_id, acquired_on)`. Current flock count is derived from `initial_count`, batch events, and birds sold; never edit a current count directly.
+Checks constrain species, purpose, and `initial_count > 0`. A database trigger permits changing `initial_count` only while the batch has no `poultry_batch_events` or sale lines; it serializes this check with event/sale writes. Index `(farm_id, acquired_on)`. Current flock count is derived from `initial_count`, batch events, and birds sold; never edit a current count directly. Once history exists, correct a starting-count mistake with a reasoned adjustment event, not by rewriting `initial_count`.
 Module: Poultry.
 
 #### `poultry_batch_events`
@@ -210,13 +210,14 @@ Purpose: record stocked-item use and reduce available inventory.
 | `item_id` | `uuid` | Required; user selects an item | Same-farm FK to `inventory_items` | Consumption form |
 | `quantity` | `numeric(12,3)` | Required; user-entered | Greater than zero | Consumption form |
 | `consumed_on` | `date` | Required; user-entered | Default today | Consumption form |
+| `health_record_id` | `uuid` | Optional; system-linked | Composite same-farm FK to a treatment; unique when present; set only by the atomic treatment workflow | Automatic from treatment form |
 | `animal_id` | `uuid` | Optional; user selects an animal | Same-farm FK; mutually exclusive with `batch_id` | Consumption form |
 | `batch_id` | `uuid` | Optional; user selects a poultry batch | Same-farm FK; mutually exclusive with `animal_id` | Consumption form |
 | `notes` | `text` | Optional; user-entered | — | Consumption form |
 | `created_at` | `timestamptz` | Required; system | `now()` | Automatic |
 
-Composite foreign keys reference the item, optional animal, and optional batch. A check disallows setting both `animal_id` and `batch_id`; quantity must be positive. Both animal/batch may be blank for farm-wide use. Index `(farm_id,item_id,consumed_on)`, `(farm_id,animal_id,consumed_on)`, and `(farm_id,batch_id,consumed_on)`.
-Module: Inventory; optional animal/batch links support Livestock and Poultry history.
+Composite foreign keys reference the item, optional animal, optional batch, and optional health record. A check disallows setting both `animal_id` and `batch_id`; quantity must be positive. Both animal/batch may be blank for farm-wide use. A linked row must reference a same-farm `treatment` with the same medicine item, animal/batch source, and date. A partial unique index on `(farm_id,health_record_id)` permits at most one consumption per treatment. A validation trigger rejects an unlinked consumption that matches a treatment's medicine item, source, and date; independent inventory consumptions remain available. Direct clients cannot set the system-linked `health_record_id`; only the atomic treatment workflow can. Index `(farm_id,item_id,consumed_on)`, `(farm_id,animal_id,consumed_on)`, `(farm_id,batch_id,consumed_on)`, and `(farm_id,health_record_id)`.
+Module: Inventory; optional animal/batch links support Livestock and Poultry history. Treatment-linked consumption is created only by the combined treatment workflow and contributes one inventory movement.
 
 #### `inventory_adjustments`
 
@@ -267,7 +268,7 @@ Purpose: maintain animal or flock health history and link administered inventory
 | `event_type` | `text` | Required; user-entered | `checkup`, `illness`, `treatment`, `vaccination`, `death` | Health record form |
 | `recorded_on` | `date` | Required; user-entered | Default today | Health record form |
 | `description` | `text` | Required; user-entered | Brief issue, finding, or care provided | Health record form |
-| `medicine_item_id` | `uuid` | Optional; user selects a medicine item | Same-farm FK; referenced item's category must be `medicine` | Health record form |
+| `medicine_item_id` | `uuid` | Optional; user selects a medicine item | Same-farm FK; referenced item's category must be `medicine`; for treatment stock use it is saved with quantity through the combined workflow | Health form or treatment-with-medicine form |
 | `notes` | `text` | Optional; user-entered | — | Health record form |
 | `created_at` | `timestamptz` | Required; system | `now()` | Automatic |
 
@@ -395,12 +396,12 @@ The table definitions above and this checklist together are normative. Every far
 | `farms` | `owner_id` FK to `auth.users(id)` with delete restrict | Name length/non-empty; uppercase three-letter currency check (supported-code list validated by UI); timezone validated by trigger against PostgreSQL timezone names; index `owner_id`; owner immutable |
 | `counterparties` | `farm_id` FK | Role/name checks; index `(farm_id,role,name)`; role-change trigger |
 | `animals` | `farm_id`, `dam_id`, `sire_id` (self-FKs composite) | Species/sex/date checks; partial unique `(farm_id,lower(tag_code))`; indexes `(farm_id,species)`, `(farm_id,acquired_on)`, `(farm_id,dam_id)`, `(farm_id,sire_id)`; future-acquired-date and cycle-prevention triggers |
-| `poultry_batches` | `farm_id` FK | Species/purpose/count checks; future-acquired-date trigger; index `(farm_id,acquired_on)` |
+| `poultry_batches` | `farm_id` FK | Species/purpose/count checks; `initial_count` edit guard synchronized with events/sales; future-acquired-date trigger; index `(farm_id,acquired_on)` |
 | `poultry_batch_events` | Composite FK to batch | Type/sign/reason checks; index `(farm_id,batch_id,event_date)`; locked projected-count trigger |
 | `inventory_items` | `farm_id` FK | Category/unit/reorder checks; unique `(farm_id,lower(name))`; index `(farm_id,category,name)`; history immutability/retirement triggers |
 | `purchases` | Composite FK to optional supplier | Supplier-role trigger; indexes `(farm_id,purchased_on)`, `(farm_id,supplier_id,purchased_on)`; deferred non-empty-lines check |
 | `purchase_lines` | Composite FKs to purchase and item | Positive quantity/non-negative cost; indexes `(farm_id,purchase_id)`, `(farm_id,item_id)` |
-| `inventory_consumptions` | Composite FKs to item, optional animal and batch | Positive quantity; animal/batch mutually exclusive; indexes `(farm_id,item_id,consumed_on)`, `(farm_id,animal_id,consumed_on)`, `(farm_id,batch_id,consumed_on)`; locked stock trigger |
+| `inventory_consumptions` | Composite FKs to item, optional animal and batch, and optional health record | Positive quantity; animal/batch mutually exclusive; treatment source/item/date consistency; partial unique `(farm_id,health_record_id)` when linked; indexes `(farm_id,item_id,consumed_on)`, `(farm_id,animal_id,consumed_on)`, `(farm_id,batch_id,consumed_on)`, `(farm_id,health_record_id)`; locked stock trigger |
 | `inventory_adjustments` | Composite FK to item | Non-zero change/non-empty reason; index `(farm_id,item_id,adjusted_on)`; locked stock trigger |
 | `production_records` | Composite FKs to item, optional animal and batch | Positive quantity; exactly one source; product-category trigger; indexes by farm/date, item/date, animal/date, batch/date; locked stock trigger |
 | `health_records` | Composite FKs to optional animal, batch, and medicine item | Event/source/death checks; partial unique `(farm_id,animal_id) WHERE event_type='death'`; indexes by farm/date, animal/date, batch/date, medicine; animal-state lock trigger |
@@ -446,7 +447,7 @@ Fields marked “automatic” are never typed by a user. “Calculated” values
 
 ### Livestock
 
-- **Add/edit animal**: required species and acquired date; optional tag, name, sex, birth date, dam, sire. Parent selectors are same-species farm animals where practical, with “unknown/not recorded” available. ID, farm, timestamps automatic; status calculated. V1 does not collect acquisition type or cost (see the approval decision below).
+- **Add/edit animal**: required species and acquired date; optional tag, name, sex, birth date, dam, sire. Parent selectors are same-species farm animals where practical, with “unknown/not recorded” available. ID, farm, timestamps automatic; status calculated. V1 excludes livestock acquisition type, purchase cost, and acquisition-cost accounting.
 - **Animal detail**: read-only derived status and history; links to health, breeding, production, consumption, and sales.
 - **Mark death**: create a health record with event type `death`, date, required description; animal status then derives as dead. Do not expose a status dropdown.
 - **Record animal sale**: use sale form and select one or more eligible animals; sale flow rejects dead/already-sold animals.
@@ -454,13 +455,14 @@ Fields marked “automatic” are never typed by a user. “Calculated” values
 ### Poultry
 
 - **Create batch**: required species, purpose, acquired date, initial count; optional batch name.
+- **Edit batch**: batch details may be edited as permitted, but `initial_count` is editable only until the first count event or bird sale. After that, show the starting count as read-only and direct count corrections to an adjustment event.
 - **Record batch event**: required batch, event type, date, signed count change; adjustment requires reason. UI asks for a positive number of birds and converts deaths to a negative stored change.
 - **Batch detail**: current count is read-only and calculated; production, health, consumption, and sale history are linked.
 
 ### Inventory
 
 - **Create/edit item**: required name, category, base unit; optional reorder level; `is_active` is created as true and managed through a separate retire action, not ordinary free-form editing. Name and reorder level remain editable. Category and base unit become read-only after any transaction/history row references the item. Item retirement is allowed only at zero stock; inactive items remain visible in history and cannot be selected in new operational forms.
-- **Record consumption**: required item, quantity, date; optional animal OR batch, notes. Available quantity is shown. Saving is rejected atomically if it would make stock negative.
+- **Record consumption**: required item, quantity, date; optional animal OR batch, notes. Available quantity is shown. Saving is rejected atomically if it would make stock negative. Medicine administered as part of treatment is recorded only through the combined treatment-with-medicine workflow; do not make a second standalone medicine-consumption entry for that treatment.
 - **Adjust stock**: required item, signed quantity change, date, reason. Display current stock and projected stock before confirmation; cannot reduce below zero.
 - **Stock list/detail**: on-hand quantity and reorder warning are calculated. Receipts, consumption, production, sales, and adjustments form a read-only movement history assembled from source records.
 
@@ -471,8 +473,9 @@ Fields marked “automatic” are never typed by a user. “Calculated” values
 
 ### Health
 
-- **Record health event**: required animal OR poultry batch, event type, date, description; optional medicine item and notes. Medicine selection is limited to inventory items in the medicine category.
-- **Medicine use**: linking a medicine documents the health event but does not silently consume stock. If stock was used, user separately records an inventory consumption; a future combined workflow may atomically create both records after v1 testing.
+- **Record health event or treatment without stock use**: required animal OR poultry batch, event type, date, description; optional notes. A treatment without inventory consumption has no medicine item and creates no stock movement.
+- **Record treatment with medicine consumption**: require the animal OR batch, treatment date and description, a medicine-category item, and quantity administered in that item's base unit; notes remain optional. Submit once to an atomic database function that creates the treatment health record and exactly one linked inventory-consumption row. The UI must not then offer a second consumption submission for that same treatment.
+- Medicine quantity is stored only on the linked inventory-consumption row. A health record alone never deducts stock, and inventory calculations count the consumption row once. The database enforces same farm, treatment type, medicine item, source animal/batch, date, and at most one linked consumption per health record.
 
 ### Breeding
 
@@ -535,6 +538,7 @@ animals self-reference dam_id and sire_id
 farms 1--N poultry_batches
 poultry_batches 1--N poultry_batch_events / health_records /
                      production_records / inventory_consumptions / sale_lines
+health_records 1--0..1 inventory_consumptions (treatment medicine use)
 
 inventory_items 1--N purchase_lines / inventory_consumptions /
                      inventory_adjustments / production_records / sale_lines
@@ -562,10 +566,10 @@ sales, purchases, expenses 1--N payments (each payment targets exactly one)
 3. Production of an inventory product adds its quantity to stock.
 4. An adjustment is a signed quantity change with a mandatory reason. It is not a substitute for recording a normal receipt or consumption.
 5. Item stock is the sum of all applicable source records, shown in the item's base unit. If stock is below the optional reorder level, show a low-stock indicator.
-6. Stock-changing forms use an atomic database transaction. A database trigger locks the affected inventory item row and validates the projected balance on insert, update, and delete. Concurrent consumers cannot both spend the same remaining stock.
+6. Stock-changing forms use an atomic database transaction. Every path that can change stock locks all affected item rows in stable ID order, then recalculates the balance from the movement source rows after obtaining the locks; it must not rely on a client value, a cached view result, or a balance read taken before waiting for a lock. Reject a transaction if it is not running at the specified `READ COMMITTED` isolation level, unless an equivalent serializable/retry strategy is implemented and tested.
 7. An operation that would make stock negative fails with a clear database error that the client maps to an actionable message. Do not clamp quantities or pretend the transaction succeeded.
 8. Items with history cannot be deleted. Corrections use an edit with full revalidation or an explicit reversing adjustment; preserve the source history.
-9. A database trigger rejects category or base-unit changes once any stock transaction or health-history row references the item. `name` and `reorder_level` remain editable.
+9. A database trigger rejects category or base-unit changes once any stock transaction or health-history row references the item. `name` and `reorder_level` remain editable. Item edits and all writes that create item references use the same item-row lock; after acquiring it, recheck history, active state, and stock using a fresh `READ COMMITTED` statement before committing.
 10. Safe item correction: if the farm's unique-name rule blocks a replacement name, first rename the old item to a clearly marked retired name (including a short ID suffix), then create the correctly categorized/unitized replacement. Reconcile physical stock using explicit, reasoned adjustments on both items (recount rather than auto-convert if units differ), and retire the old item at zero stock. Keep historic transaction IDs, quantities, and prices unchanged; because item names are joined rather than snapshotted, historical screens show the retired label. Retired items remain queryable but cannot be used in new transactions. Do not rewrite historic quantities or relabel their units.
 
 ### Counterparty roles
@@ -580,10 +584,10 @@ sales, purchases, expenses 1--N payments (each payment targets exactly one)
 - Product lines require product-category items and reduce inventory. Animal lines always represent one eligible animal. Poultry batch lines represent a positive integer number of birds and reduce the flock count.
 - Sale line price is the price at sale time. Sale total is the sum of line quantity × unit price. A zero unit price is allowed for a documented no-charge transfer; user confirmation is recommended.
 - Customer is optional for cash/anonymous sales. Payment is separate from the sale so partial, later, or multiple payments are supported.
-- Payment target and farm must match. Payment amount is positive and cannot exceed the document's remaining balance. Enforce under a target-row lock so concurrent payments cannot overpay or race a document-total change.
-- A sale with payments cannot be edited to a lower total than paid. Deleting a sale/payment with dependent records is restricted; corrections must preserve a valid balance.
-- Enforce one animal sale with `UNIQUE (farm_id,animal_id) WHERE animal_id IS NOT NULL`. A database trigger locks the animal row while validating both sale and death events, rejects selling a dead animal and recording death for a sold animal, and rechecks on updates. The partial unique death index prevents duplicate death events. The row lock serializes competing sale/death requests.
-- The multi-line sale function locks all selected animal rows in stable ID order before validation and insertion. Database triggers repeat the invariant check, so direct or concurrent writes cannot bypass it.
+- Payment target and farm must match. Payment amount is positive and cannot exceed the document's remaining balance. `record_payment` locks the target document row, then in a later `READ COMMITTED` statement recalculates both the document total and all committed payments before validating the new amount.
+- Posted sales, lines, purchases, purchase lines, expenses, and payments have no direct client update/delete path in v1. A future audited correction operation must lock the affected document row, recalculate its total and paid amount after acquiring the lock, and preserve a valid balance; no such correction workflow is currently approved.
+- Enforce one animal sale with `UNIQUE (farm_id,animal_id) WHERE animal_id IS NOT NULL`. A database trigger locks the animal row while validating both sale and death events, then re-reads both terminal-event sources in a separate `READ COMMITTED` statement after any lock wait. It rejects selling a dead animal and recording death for a sold animal. The partial unique death index prevents duplicate death events; the shared lock and fresh recheck serialize competing sale/death requests.
+- The multi-line sale function locks all selected animal rows in stable ID order before validation and insertion. Database triggers repeat the fresh state check so direct or concurrent writes cannot bypass it.
 - Reversals/refunds are not modeled in v1. Do not enter negative payments; flag the limitation and capture refunds in a future dedicated workflow.
 
 ### Purchases, suppliers, and payments
@@ -592,8 +596,8 @@ sales, purchases, expenses 1--N payments (each payment targets exactly one)
 - Purchase total is the sum of quantity × unit cost. Supplier is optional for a cash-market purchase.
 - Supplier payments are installments against a purchase. Payments cannot exceed the balance.
 - Inventory purchases are not also entered as expenses. Non-stock operating outlays are expenses. This separation prevents duplicate cash-outflow reporting.
-- A purchase cannot be reduced below paid amount; history with payments cannot be silently deleted.
-- **Livestock acquisition decision (approval required):** v1 currently records only `acquired_on` for an animal/batch. It does not include `acquisition_type` or `purchase_cost`; no user-entered acquisition source/cost is silently added. Recommendation: approve excluding both fields for v1 unless livestock purchase accounting is a launch requirement. Consequence: the purchase outflow, supplier payable, and cost are absent from Purchases, cash-paid/payables cards, and financial reports. `acquired_on` remains useful for husbandry but cannot distinguish born from purchased stock. If inclusion is approved, define a linked livestock acquisition/payment workflow first; adding an isolated cost field would not correctly participate in supplier balances or cash reporting.
+- Posted purchases, lines, and payments have no direct client update/delete path in v1. Any future audited correction must lock the target document and recheck totals and payments in the same transaction.
+- **Approved livestock acquisition-cost exclusion:** v1 records only `acquired_on` for an animal/batch. It does not include `acquisition_type`, `purchase_cost`, or livestock acquisition-cost accounting. Consequently, livestock purchase outflows and related supplier payables are absent from Purchases, cash-paid/payables cards, and financial reports. `acquired_on` remains useful for husbandry but cannot distinguish born from purchased stock. No linked livestock acquisition/payment workflow or isolated cost field is part of v1.
 
 - Multi-line purchase creation uses one atomic database function that requires at least one line. Clients cannot directly insert an empty purchase.
 
@@ -605,12 +609,13 @@ sales, purchases, expenses 1--N payments (each payment targets exactly one)
 - Dam and sire must be different same-farm animals. A database trigger prevents parentage cycles. Sex mismatch is rejected only when sex is explicitly known; unknown sex is accepted.
 - A sale or death changes derived animal status; status is not independently editable.
 - Poultry count events must result in non-negative count. Sales and events are checked atomically against the batch.
-- Every poultry sale and count event locks its parent batch row, computes the projected count from the initial count plus all events and sold quantities (including the pending change), and rejects a negative result. Multi-batch operations lock batch rows in stable ID order. Validation and writes occur in one transaction so concurrent sales/deaths/additions cannot overdraw a batch.
+- Every poultry sale and count event locks its parent batch row, then recalculates `initial_count + committed event changes - committed sold birds + pending change` in a separate fresh `READ COMMITTED` statement. It rejects a negative result. Multi-batch operations lock batch rows in stable ID order. A row lock alone is insufficient: never validate against a count calculated before a lock wait or from a stale client/view result.
+- `initial_count` may be corrected only while the batch has no count events or bird sales. A database trigger serializes `initial_count` updates with event/sale writes using the same batch-row lock and rechecks for history after acquiring it. Once either type of history exists, reject any `initial_count` change; record corrections as adjustment events with a required reason. The edit form disables the starting-count field and directs the user to the adjustment-event form.
 
 ### Health and breeding
 
 - Health and breeding history is append-first. Correcting a mistake requires an explicit edit permission and audit-appropriate UI; do not silently overwrite history.
-- Selecting medicine in a health record documents treatment but does not automatically subtract inventory. Inventory consumption is a separate explicit action in v1 to avoid accidental stock loss.
+- A treatment without medicine consumption has no `medicine_item_id` and creates no stock movement. When medicine and positive quantity administered are supplied, one atomic treatment workflow creates the health record and exactly one linked `inventory_consumptions` row. The consumed quantity is stored only on that row; the health record itself is not a stock movement. A same-farm FK, matching treatment/item/source/date validation, and a partial unique index allow at most one consumption per treatment. Inventory views count that row exactly once. The UI captures medicine and quantity together and submits once; it must not prompt for a second consumption entry.
 - Expected due date is optional and is not an authoritative pregnancy outcome. Pregnancy check result is a separate event.
 
 ### Finance and dashboard
@@ -646,6 +651,7 @@ Enable RLS on `profiles` and every public application table.
 - `farms`: select/update/delete only where `owner_id = auth.uid()`; insert only when `owner_id = auth.uid()`. Prevent owner transfer in v1.
 - Every farm-owned table: select/insert/update/delete only if an `EXISTS` check finds its `farm_id` in `farms` with `owner_id = auth.uid()`. For update, enforce the check in both `USING` and `WITH CHECK`. Database triggers also reject inactive-item references and invalid category/unit transitions; hiding inactive items in a selector is not sufficient enforcement.
 - Validate every referenced row belongs to the same farm using composite foreign keys, not RLS alone.
+- Direct client inserts may not set `health_record_id`; direct updates may target only unlinked consumption rows and must leave the link null. Linked treatment-consumption rows are immutable to clients. A validation trigger serializes treatment creation and consumption on the item row, then rejects an unlinked consumption matching an existing treatment's medicine item, source, and date; the `record_treatment` RPC links the one treatment consumption atomically. This prevents the treatment form from being duplicated by a separate consumption entry while preserving independent inventory consumption.
 - For counterparty references, validate the role required by the workflow (customer/supplier/both) in a database constraint/trigger or controlled function; UI filtering is not a security control.
 - Do not allow direct client writes to derived views. Grant only the required table/view/function privileges to `authenticated`.
 - Anonymous users receive no access to farm data.
@@ -655,10 +661,15 @@ Policies should be explicit per table and tested with two authenticated test use
 ### Database functions and transaction safety
 
 - Prefer ordinary RLS-protected table operations for single-row edits.
-- Implement multi-line sale/purchase creation and payment application as PostgreSQL functions invoked through Supabase RPC so the whole operation is atomic. Functions must validate `auth.uid()`, farm ownership, same-farm references, line requirements, and amounts.
+- Implement multi-line sale/purchase creation, payment application, and treatment-plus-medicine recording as PostgreSQL functions invoked through Supabase RPC so each operation is atomic. Functions must validate `auth.uid()`, farm ownership, same-farm references, line requirements, and amounts.
 - Enforce at least one line on each sale and purchase with deferred constraint triggers checked at commit, in addition to the RPC validation. The parent and lines therefore succeed or fail together, and no empty document can persist.
 - Functions that do not need elevated privileges must be `SECURITY INVOKER`. If a `SECURITY DEFINER` function is unavoidable, pin `search_path`, schema-qualify objects, validate caller ownership inside the function, revoke `EXECUTE` from `PUBLIC`/`anon`, and grant only to `authenticated`.
-- Enforce stock, animal, poultry-count, counterparty-role, item-category/unit, and payment invariants in the database, not just React validation. Use parent-row locks around balance/state checks to prevent races.
+- Use `READ COMMITTED` isolation for database operations that validate ledger totals or state derived from multiple rows. Triggers/RPCs must reject a higher isolation level unless an equivalent serialization-and-retry design is implemented and tested. Implement post-lock re-reads in a subsequent statement of a `VOLATILE` function, not a `STABLE` helper, so the query uses a fresh `READ COMMITTED` snapshot. A caller-supplied value or pre-lock aggregate is never authoritative.
+- Enforce stock, animal, poultry-count, counterparty-role, item-category/unit, and payment invariants in the database, not just React validation. Lock all affected parent rows in stable ID order. After any wait for a lock, use a subsequent SQL statement to re-read the relevant source rows and recalculate the balance/state using a fresh `READ COMMITTED` snapshot before inserting or updating. Keep validation and the corresponding write in the same transaction. Row locks alone do not prove the check used a current aggregate.
+- Apply this protocol to all inventory movements and item category/unit/retirement changes (lock item rows and recalculate stock/history), poultry events/sales/`initial_count` changes (lock batch rows and recalculate counts/history), animal sales/deaths (lock animal rows and re-read both terminal event sources), and payments (lock the target document and re-read its total and committed payment sum). Multi-key operations acquire locks in stable sorted order. Database checks and unique indexes remain final safeguards.
+- Posted sale, purchase, expense, and payment records cannot be directly updated or deleted by clients in v1. Any future audited correction operation must take the same target-document lock and revalidate the resulting balance.
+- The treatment RPC inserts a health record and, only when medicine and positive quantity are supplied together, one linked inventory-consumption row. The same item lock and fresh stock check protect its single deduction.
+- Before creating a linked treatment consumption, `record_treatment` checks for any existing unlinked consumption with the same farm, item, animal/batch, and date; reject rather than deducting again. The generic consumption trigger takes the same item lock and rejects an unlinked movement when a matching treatment already exists. This handles either transaction ordering without counting the health record itself as stock movement.
 - Return explicit errors for invalid state and map known database constraint/function errors to user-friendly form messages. Never substitute success-shaped defaults.
 - No edge function or application server is required for v1. If later added, it must use the service-role key only server-side and must still enforce authorization.
 
@@ -744,10 +755,11 @@ The exact migration count may be lower; do not create empty migrations merely to
 - Migration applies cleanly to an empty local database.
 - Constraints reject cross-farm foreign keys, duplicate farm tags, invalid sale line variants, invalid payment targets, and negative quantities.
 - RLS integration tests cover owner access, other-owner denial, and anonymous denial for every table.
-- Concurrency tests exercise two simultaneous inventory consumptions, poultry sales/count events, and payments against nearly depleted balances, plus competing animal sale/death transitions.
+- Concurrency tests use separate database sessions and a synchronization barrier (or controlled lock wait) to make transactions overlap; serial sequential requests are not accepted as concurrency tests. Exercise two stock movements that together exceed available inventory, simultaneous poultry sale/count writes, simultaneous payments exceeding a document balance, competing animal sale/death transitions, and item reclassification/retirement racing a referencing stock operation. Verify a fresh post-lock recalculation, a clear rejection or serialization error for the losing operation, and no negative/stale final balance.
+- Race `initial_count` edits against the first poultry event and first batch sale. If the edit locks first, it may commit and the event/sale must use the new starting count; if the event/sale locks first, the starting-count edit must fail. After history exists, every later `initial_count` edit must fail and an adjustment event must be used.
 - Constraint tests cover every table's required same-farm foreign keys, composite references, checks, and unique indexes listed in Section 2.3; role changes and inventory item retirement/correction are also tested.
 - Form tests cover optional-field omission, conditional fields, decimal precision, and surfaced database errors.
-- View tests reconcile inventory, poultry counts, document totals, and payment balances to their source rows.
+- Treatment tests verify one atomic health record plus exactly one linked consumption when medicine and quantity are supplied, no movement when treatment is recorded without stock use, rejection of a duplicate unlinked consumption matching a treatment, and no second linked consumption for one treatment. Race treatment creation against a matching unlinked consumption in separate sessions; the shared item lock and fresh recheck must prevent both movements from committing. Independent inventory consumptions remain valid. View tests reconcile inventory, poultry counts, document totals, and payment balances to their source rows.
 
 ## 9. Field-to-form coverage matrix
 
@@ -759,15 +771,15 @@ Every user-entered or user-selected persistent field appears below. System field
 | `farms` | `name`, `currency_code`, `timezone` | Farm create/edit |
 | `counterparties` | `role`, `name`, `phone`, `email`, `address` | Customer/supplier create/edit |
 | `animals` | `species`, `tag_code`, `name`, `sex`, `birth_date`, `acquired_on`, `dam_id`, `sire_id` | Livestock create/edit |
-| `poultry_batches` | `species`, `purpose`, `batch_name`, `acquired_on`, `initial_count` | Poultry batch create |
+| `poultry_batches` | `species`, `purpose`, `batch_name`, `acquired_on`, `initial_count` (editable only before events/sales) | Poultry batch create/edit; count adjustment event after history exists |
 | `poultry_batch_events` | `batch_id`, `event_type`, `quantity_change`, `event_date`, conditional `reason` | Poultry event form |
 | `inventory_items` | `name`, `category`, `unit`, `reorder_level`, `is_active` (retire action; default true) | Inventory item create/edit and retire-item workflow; category/unit become read-only after history exists |
 | `purchases` | `supplier_id`, `purchased_on`, `reference`, `notes` | Record received purchase |
 | `purchase_lines` | `item_id`, `quantity`, `unit_cost` | Purchase line editor |
-| `inventory_consumptions` | `item_id`, `quantity`, `consumed_on`, optional `animal_id`/`batch_id`, `notes` | Inventory consumption form |
+| `inventory_consumptions` | `item_id`, `quantity`, `consumed_on`, optional `animal_id`/`batch_id`, `notes` | Inventory consumption form or atomic treatment-with-medicine form; `health_record_id` is system-linked |
 | `inventory_adjustments` | `item_id`, `quantity_change`, `adjusted_on`, `reason` | Stock adjustment form |
 | `production_records` | `item_id`, `quantity`, `recorded_on`, exactly one `animal_id`/`batch_id`, `notes` | Production form |
-| `health_records` | exactly one `animal_id`/`batch_id`, `event_type`, `recorded_on`, `description`, optional `medicine_item_id`, `notes` | Health record form; death action |
+| `health_records` | exactly one `animal_id`/`batch_id`, `event_type`, `recorded_on`, `description`, optional `medicine_item_id`, `notes` | Health record form; death action; medicine item and quantity use the atomic treatment workflow |
 | `breeding_events` | `dam_id`, optional `sire_id`, `event_type`, `event_date`, conditional `result`, `expected_due_date`, `notes` | Breeding event form |
 | `sales` | optional `customer_id`, `sold_on`, `reference`, `notes` | Record sale |
 | `sale_lines` | exactly one `item_id`/`animal_id`/`batch_id`, `quantity`, `unit_price` | Sale line editor |
@@ -775,7 +787,7 @@ Every user-entered or user-selected persistent field appears below. System field
 | `payments` | exactly one `sale_id`/`purchase_id`/`expense_id`, `amount`, `paid_on`, optional `method`, `reference` | Record receipt or payment |
 | `tasks` | `title`, `description`, `due_on`, status transition | Task create/edit and complete/reopen action |
 
-`farm_id`, record IDs, `owner_id`, timestamps, `completed_at`, all balances/counts/totals/statuses, and sale/purchase line totals are generated or calculated; users have no direct fields for them. The category and unit fields remain user-entered at item creation and are conditionally editable only before references exist.
+`farm_id`, record IDs, `owner_id`, timestamps, `completed_at`, all balances/counts/totals/statuses, sale/purchase line totals, and the treatment-generated `inventory_consumptions.health_record_id` are generated or calculated; users have no direct fields for them. The category and unit fields remain user-entered at item creation and are conditionally editable only before references exist.
 
 ## 10. Explicit v1 exclusions
 
@@ -783,8 +795,6 @@ The following are intentionally not proposed: multi-user farm teams, animal loca
 
 Revisit an exclusion only when a specific operational workflow and its required form, relationships, and security rules are defined. Do not add a column “for future use.”
 
-## 11. Approval decision before implementation
+## 11. Approved v1 scope decision
 
-**Approval requested:** confirm whether v1 excludes livestock `acquisition_type` and `purchase_cost`.
-
-**Recommendation:** approve exclusion for v1 unless recording livestock purchase costs and supplier balances is a launch requirement. The exclusion keeps animal/batch records lean and avoids an unlinked cost field, but livestock acquisition outflows/payables will be absent from purchasing, cash, and financial reports. If inclusion is required, approve a linked acquisition transaction workflow before schema implementation; do not add the two fields in isolation.
+V1 excludes livestock `acquisition_type`, `purchase_cost`, and livestock acquisition-cost accounting. This decision is approved, not pending. The schema, forms, migrations, reports, and finance calculations must not add these fields or represent livestock acquisition costs. The consequence is that livestock acquisition outflows and related supplier payables are absent from purchasing, cash, and financial reports. Reconsider only through a separately approved future scope and a linked acquisition/payment workflow; do not add isolated cost fields.
