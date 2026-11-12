@@ -1,10 +1,10 @@
 -- FarmPro identity and farm foundation.
 -- PostgreSQL 17 / Supabase. This migration is intentionally un-applied.
 
--- Establish the approved default for both PostgREST's login role and the
--- effective application role. Statement guards below reject other levels.
+-- Set the login role's default transaction isolation for PostgREST sessions.
+-- Role settings are applied at login; SET ROLE does not apply authenticated's
+-- role-specific setting. Statement guards below reject unsupported levels.
 ALTER ROLE authenticator SET default_transaction_isolation = 'read committed';
-ALTER ROLE authenticated SET default_transaction_isolation = 'read committed';
 
 CREATE SCHEMA IF NOT EXISTS private;
 REVOKE ALL ON SCHEMA private FROM PUBLIC, anon, authenticated, service_role;
