@@ -29,7 +29,7 @@
 - Every farm-to-farm-row relationship uses `FOREIGN KEY (farm_id, related_id) REFERENCES related_table(farm_id,id) ON DELETE RESTRICT`.
 - `created_at`: `timestamptz NOT NULL DEFAULT now()` except on `purchase_lines` and `sale_lines`. Those lines have no independent lifecycle; their parent document's `created_at` is the transaction creation timestamp.
 - `updated_at`: `timestamptz NOT NULL DEFAULT now()` on editable master records only: farms, counterparties, animals, and inventory items. Maintain it with a trigger.
-- Quantities: `numeric(12,3)` unless the value is a whole bird count (`integer`). Money: `numeric(12,2)` in the farm currency. Do not store calculated line totals.
+- Quantities: `numeric(12,3)` unless the value is a whole bird count (`integer`). Money: `numeric(18,0)` in the farm currency. Do not store calculated line totals.
 - Finite values are `text` with `CHECK` constraints. Values and units are listed in the table sections below.
 - “No default” means the form or authenticated workflow must supply the value; do not invent a default.
 
@@ -250,7 +250,7 @@ All columns below are required unless marked optional. `system` means the databa
 | `purchase_id` | `uuid` | Parent purchase |
 | `item_id` | `uuid` | Required inventory-item selection |
 | `quantity` | `numeric(12,3)` | No default; positive user input |
-| `unit_cost` | `numeric(12,2)` | No default; non-negative user input |
+| `unit_cost` | `numeric(18,0)` | No default; non-negative user input |
 
 **Relationships / rules:** Composite FKs to purchase and inventory item. Index `(farm_id,purchase_id)`, `(farm_id,item_id)`. The item/quantity form a positive inventory receipt. No `created_at`: the parent purchase timestamps the receipt. Line/purchase totals are calculated.
 
@@ -338,7 +338,7 @@ All columns below are required unless marked optional. `system` means the databa
 | `animal_id` | `uuid` nullable | Individual animal; mutually exclusive with item/batch |
 | `batch_id` | `uuid` nullable | Poultry batch; mutually exclusive with item/animal |
 | `quantity` | `numeric(12,3)` | No default; positive user input, 1 for animal, whole birds for batch |
-| `unit_price` | `numeric(12,2)` | No default; non-negative user input |
+| `unit_price` | `numeric(18,0)` | No default; non-negative user input |
 
 **Relationships / rules:** Composite FKs to sale, item, animal, and batch. Check exactly one of item/animal/batch, quantity requirements, and non-negative unit price. For a batch line, require `quantity = trunc(quantity)` so poultry sales contain whole birds; item quantities may remain fractional where the base unit permits it, and an individual-animal line has quantity exactly 1. A trigger requires an item-backed sale line's item category to be `product`. Partial unique index `(farm_id,animal_id) WHERE animal_id IS NOT NULL` enforces at most one sale per individual animal. Index `(farm_id,sale_id)`, `(farm_id,item_id)`, `(farm_id,batch_id)`. No `created_at`: parent sale timestamps the lines. Total is calculated.
 
@@ -351,7 +351,7 @@ All columns below are required unless marked optional. `system` means the databa
 | `id` | `uuid` PK | Generated |
 | `farm_id` | `uuid` | Selected farm context |
 | `category` | `text` | No default; `labor`, `utilities`, `veterinary`, `transport`, `maintenance`, `other` |
-| `amount` | `numeric(12,2)` | No default; positive user input |
+| `amount` | `numeric(18,0)` | No default; positive user input |
 | `spent_on` | `date` | Today |
 | `description` | `text` | No default; required user input |
 | `supplier_id` | `uuid` nullable | Optional supplier/both contact |
@@ -370,7 +370,7 @@ All columns below are required unless marked optional. `system` means the databa
 | `sale_id` | `uuid` nullable | Conditional payment target |
 | `purchase_id` | `uuid` nullable | Conditional payment target |
 | `expense_id` | `uuid` nullable | Conditional payment target |
-| `amount` | `numeric(12,2)` | No default; positive user input |
+| `amount` | `numeric(18,0)` | No default; positive user input |
 | `paid_on` | `date` | Today |
 | `method` | `text` nullable | Optional `cash`, `bank_transfer`, `mobile_money`, `card`, `other` |
 | `reference` | `text` nullable | Optional transaction reference |
@@ -619,3 +619,80 @@ Use `WITH (security_invoker = true)` for PostgreSQL views and test access with a
 7. **Isolation deployment verification:** The platform behavior and proposed `READ COMMITTED` enforcement are specified in Section 4.3. Before implementation, read-only inspection must confirm the actual PostgreSQL/PostgREST versions, effective `authenticator`/`authenticated` and database defaults, `pgrst.db_pre_request` registration (compose with any existing pre-request function), `db-hoisted-tx-settings`, callable-function `proconfig`, and all runtime SQL writers. These FarmPro project facts are unknown because the project was not inspected; verify them before relying on the design. Then pass isolation test 15. Do not treat documented platform defaults as evidence of the deployed configuration.
 
 No unresolved livestock-cost question remains: the user approved excluding `acquisition_type`, `purchase_cost`, and livestock acquisition-cost accounting from V1.
+
+
+## 12. Final readiness amendments — authoritative over earlier sections
+
+This section resolves the final readiness review. Where an earlier section conflicts with this section, Section 12 takes precedence. These amendments must be included in the reviewed migration design and tests before frontend implementation.
+
+### 12.1 Currency: whole units only, zero displayed decimals
+
+- Replace every monetary `numeric(12,2)` definition with `numeric(18,0)`. All stored money is an exact whole number of the farm's selected currency.
+- Every currency, regardless of ISO 4217 minor-unit convention, uses zero decimal places in FarmPro. Do not display decimal digits in forms, dashboard cards, tables, charts/tooltips, detail pages, reports, print layouts, or exports.
+- At the server boundary, round incoming monetary values using PostgreSQL `round(value, 0)` before persistence and before idempotency fingerprinting. PostgreSQL numeric ties round away from zero. Persist only the rounded whole-unit result.
+- Round each line extension individually: `round(quantity * whole_unit_unit_price, 0)`; document totals are the sum of rounded line totals. Do not sum unrounded line products and round only once at document level.
+- Payment amounts and balances are whole units; overpayment checks use the same persisted whole-unit values. JavaScript floating-point arithmetic is never authoritative.
+- Use currency formatting with `minimumFractionDigits: 0` and `maximumFractionDigits: 0`. Verify every screen and export contains no decimal places. Quantities retain their own precision rules and are not rounded by this currency policy.
+
+### 12.2 Generic idempotency registry and required request IDs
+
+Create an unexposed `private.operation_requests` table. Required columns: `farm_id uuid`, `operation text`, `request_id uuid`, `payload_fingerprint text`, `result_type text`, `result_id uuid`, `created_at timestamptz`; unique key `(farm_id,operation,request_id)`. Do not grant anon/authenticated access or expose the private schema through the Data API.
+
+Every client submission to a retry-sensitive workflow creates one UUID once and reuses it unchanged for all network retries. The following writes require request UUIDs and registry protection: sale, purchase, payment, expense, inventory consumption, inventory adjustment, production, poultry count event, and health event (including treatment, vaccination, and death). A child operation performed inside a parent RPC shares the parent request and must not create a second request claim.
+
+For each RPC, authenticate and verify farm ownership before registry lookup. Canonicalize the complete semantic payload on the server; exclude the request UUID from the fingerprint. Normalize whole-unit money before hashing, but preserve exact quantity precision. Use fixed versioned fields, canonical UUID/date/text/null normalization, deterministic UTF-8 JSON, and SHA-256. Verify UTF-8 encoding, PostgreSQL normalization support, and the installed `pgcrypto` extension and schema; use a schema-qualified digest function. Do not assume `pgcrypto` is installed in a particular schema.
+
+Claim with `INSERT ... ON CONFLICT DO NOTHING`. On conflict, read the committed request in a separate statement under READ COMMITTED. Same key and same fingerprint returns the original result with no writes; same key and different fingerprint returns an idempotency conflict. Concurrent same-key requests are resolved by the unique constraint and a fresh re-read, not by catching a uniqueness error that aborts the transaction. For a new request, operation writes and registry result reference commit in one transaction; any failure rolls both back. Distinct UUIDs must allow legitimate identical operations, including multiple same-day administrations and separate payments.
+
+### 12.3 Health/death immutability and vaccination stock
+
+- Health records are append-only in V1. Revoke direct authenticated INSERT/UPDATE/DELETE and create health events through `record_health_event`. Do not allow a client to edit or delete a death event or alter its event type, target, or date.
+- Death is terminal in V1. There is no in-app reversal RPC. An erroneous death record requires explicitly authorized, audited maintenance correction; the ordinary application cannot silently restore an animal to active status.
+- Generalize the atomic health workflow to support both `treatment` and `vaccination` with optional medicine consumption. Both event types can consume stock; the health record and its one linked inventory-consumption row are created in the same transaction.
+- Medicine item and quantity must both be null or both be supplied. If supplied, the item must be active, same-farm and category `medicine`, quantity positive in base units, and event type treatment or vaccination. Same-farm source, medicine, date, and event consistency are checked by the database.
+- Keep the unique partial index allowing at most one consumption per health record. Only the health RPC can set `health_record_id`; direct client insert/update cannot create, alter, or detach a linked treatment/vaccination consumption. Treatment/vaccination without medicine remains valid, idempotent, and creates no stock movement.
+- Different request UUIDs permit multiple legitimate same-day administrations to the same animal/batch.
+
+### 12.4 One global lock hierarchy
+
+All multi-resource write paths use this order and acquire all locks at each rank in ascending UUID order before advancing:
+1. Counterparty rows.
+2. Inventory item rows.
+3. Individual animal rows.
+4. Poultry batch rows.
+5. Existing document/payment target rows, ordered by table rank then UUID.
+6. Insert new document and append-only movement/event rows only after all parent/resource locks and validations.
+
+Verify farm ownership before locking. Never acquire a lower-ranked lock after a higher-ranked lock. Every multi-row set is locked in deterministic UUID order. A workflow that cannot follow the hierarchy must be redesigned. After locks are acquired, perform authoritative stock/count/payment/role/state recalculation in a separate fresh SQL statement under READ COMMITTED, retain locks through commit, and write all related records atomically. Preserve the previously approved transaction-isolation enforcement.
+
+### 12.5 Inventory adjustment correction
+
+Inventory adjustments are immutable ledger entries. Revoke direct UPDATE/DELETE and create them only through idempotent `record_inventory_adjustment`. Correct a mistake by appending a reversing adjustment with the exact opposite quantity, a required reason, and a reference to the original; a partial unique index permits only one reversal per original. Add nullable `reverses_adjustment_id` with same-farm composite FK and validate same item plus exact opposite quantity. If a corrected balance is still needed, append a separate corrected adjustment. Never rewrite or delete the original entry. Lock the item and perform a fresh post-lock balance calculation before accepting the adjustment; reject a negative result.
+
+### 12.6 Reconcile table grants, RLS, and operational RPCs
+
+The earlier Section 6 privilege matrix is superseded as follows:
+- Authenticated users may SELECT application tables and approved views subject to owner RLS.
+- Direct client writes are limited to editable master tables (`farms`, `counterparties`, `animals`, `poultry_batches`, `inventory_items`) and `tasks`, with table-specific RLS and validation.
+- Revoke direct client INSERT/UPDATE/DELETE on sales/lines, purchases/lines, payments, expenses, inventory consumptions, inventory adjustments, production records, poultry batch events, and health records. All writes to those operational ledgers go through narrowly scoped RPCs.
+- Breeding events may be inserted directly only if they do not affect stock, terminal animal state, or financial balances; they are immutable to clients after creation.
+- Grant EXECUTE only to authenticated on the approved caller-facing RPCs: `create_sale`, `create_purchase`, `record_payment`, `record_expense`, `record_inventory_consumption`, `record_inventory_adjustment`, `record_production`, `record_poultry_event`, and `record_health_event`. Revoke from PUBLIC and anon. Trigger/internal helpers and the private request registry are not client-callable.
+- RPCs that write protected tables use narrowly scoped SECURITY DEFINER only where required. Pin safe search_path, schema-qualify all references, reject null auth.uid(), explicitly validate the requested farm and every referenced row, and do not rely on RLS inside SECURITY DEFINER. Enable RLS on all exposed public tables. UPDATE policies require USING and WITH CHECK. Test grants and RLS separately; no policy can compensate for an absent table grant, and no grant replaces row ownership checks.
+
+### 12.7 Migration dependency and test additions
+
+Add the private idempotency schema/table and helper functions before caller-facing operational RPCs. Add the reversal reference/constraint/index to the inventory-adjustment migration. Create the generalized health RPC only after health and inventory-consumption tables exist. The migration dependency sequence must reflect these objects; do not expose the private schema through PostgREST.
+
+Add acceptance tests:
+1. Same request UUID/same canonical payload returns original result; same UUID/changed payload conflicts; concurrent duplicate requests create one operation; distinct UUIDs permit legitimate repeated operations.
+2. Idempotency applies to every listed RPC, including expenses, adjustments, production, consumption, poultry events, and health events.
+3. Money is rounded before storage and fingerprinting; stored monetary values are integral; line totals are individually rounded; no UI/report/export displays decimal places.
+4. Death records cannot be updated/deleted by authenticated clients and no V1 application RPC reverses death.
+5. Vaccination with medicine deducts exactly once atomically; without medicine it creates no movement; retries do not double-deduct.
+6. Mixed-resource transactions follow the global lock hierarchy; run overlapping independent sessions and confirm correct post-lock rechecks, no negative balances/counts, no overpayments, and no avoidable deadlocks.
+7. Adjustment reversal preserves the original, is exact-opposite, same-farm/same-item, and can occur at most once.
+8. Test direct table privileges and RLS separately; verify the private idempotency table and internal functions cannot be accessed by anon/authenticated.
+
+### 12.8 Resolved review items
+
+The final readiness review items are resolved by this section. No further design decision is needed for currency precision: V1 uses whole units and zero displayed decimal places for every farm currency. The remote Supabase project and old migration ledger remain uninspected; their read-only verification and per-version reconciliation are still required before any remote migration repair or push. This documentation change does not authorize remote database changes or deployment.
